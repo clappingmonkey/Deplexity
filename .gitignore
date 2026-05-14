@@ -10,6 +10,13 @@ bin/
 *.dylib
 *.test
 *.out
+vendor/
+
+# Go coverage & profiling
+coverage.out
+*.prof
+*.cpu
+*.mem
 
 # Bazel
 /bazel-*
@@ -27,8 +34,13 @@ bin/
 .DS_Store
 Thumbs.db
 
+# Environment/secrets (never commit)
+.env
+.env.*
+session.json
+
+# Logs
+*.log
+
 # Export output (don't commit exported data)
 deplexity-export/
-
-# Session data (contains secrets)
-session.json
