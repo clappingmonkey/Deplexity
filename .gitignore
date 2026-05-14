@@ -1,6 +1,6 @@
 # Binary output
 bin/
-deplexity
+/deplexity
 
 # Go
 *.exe
