@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,13 +9,11 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
-const (
-	sessionValidateURL = "https://www.perplexity.ai/api/auth/session"
-	userAgent          = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-)
+const sessionValidateURL = "https://www.perplexity.ai/api/auth/session"
 
 // SessionInfo holds the result of validating a session.
 type SessionInfo struct {
@@ -25,7 +24,7 @@ type SessionInfo struct {
 
 // ValidateSession checks if the saved session is still valid by calling
 // Perplexity's NextAuth session endpoint.
-func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
+func ValidateSession(ctx context.Context, session *models.SavedSession) (*SessionInfo, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create cookie jar: %w", err)
@@ -45,19 +44,19 @@ func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
 	}
 	jar.SetCookies(perplexityURL, httpCookies)
 
-	client := &http.Client{
+	httpClient := &http.Client{
 		Jar:     jar,
 		Timeout: 15 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", sessionValidateURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", sessionValidateURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create request: %w", err)
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", client.UserAgent)
 	req.Header.Set("Referer", "https://www.perplexity.ai/")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("session validation request failed: %w", err)
 	}
@@ -72,8 +71,7 @@ func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
 		return &SessionInfo{Valid: false}, nil
 	}
 
-	// NextAuth returns an empty object {} for invalid sessions
-	// and a populated object with user info for valid ones.
+	// NextAuth returns an empty object {} for invalid sessions.
 	if len(result) == 0 {
 		return &SessionInfo{Valid: false}, nil
 	}
@@ -96,7 +94,7 @@ func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
 
 // CookieLogin creates a session from a manually provided session token,
 // bypassing browser-based authentication entirely.
-func CookieLogin(token string) (*models.SavedSession, error) {
+func CookieLogin(ctx context.Context, token string) (*models.SavedSession, error) {
 	session := &models.SavedSession{
 		SessionToken: token,
 		Cookies: []models.Cookie{
@@ -113,7 +111,7 @@ func CookieLogin(token string) (*models.SavedSession, error) {
 	}
 
 	fmt.Println("Validating session token...")
-	info, err := ValidateSession(session)
+	info, err := ValidateSession(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("could not validate token: %w", err)
 	}

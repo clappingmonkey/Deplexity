@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/clappingmonkey/deplexity/internal/client"
@@ -8,9 +9,9 @@ import (
 )
 
 // GetUser fetches the authenticated user's profile.
-func GetUser(c *client.Client) (*models.User, error) {
+func GetUser(ctx context.Context, c *client.Client) (*models.User, error) {
 	var raw UserResponse
-	if err := c.Get("/rest/user/", &raw); err != nil {
+	if err := c.Get(ctx, "/rest/user/", &raw); err != nil {
 		return nil, fmt.Errorf("failed to get user profile: %w", err)
 	}
 
@@ -24,9 +25,9 @@ func GetUser(c *client.Client) (*models.User, error) {
 }
 
 // GetRateLimit fetches the current rate limit status.
-func GetRateLimit(c *client.Client) (*RateLimitResponse, error) {
+func GetRateLimit(ctx context.Context, c *client.Client) (*RateLimitResponse, error) {
 	var raw RateLimitResponse
-	if err := c.Get("/rest/rate-limit/all", &raw); err != nil {
+	if err := c.Get(ctx, "/rest/rate-limit/all", &raw); err != nil {
 		return nil, fmt.Errorf("failed to get rate limits: %w", err)
 	}
 	return &raw, nil

@@ -11,6 +11,11 @@ deplexity
 *.test
 *.out
 
+# Bazel
+/bazel-*
+.bazelrc.user
+.ijwb/
+
 # IDE
 .idea/
 .vscode/

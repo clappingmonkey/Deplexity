@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "api",
+    srcs = [
+        "collections.go",
+        "threads.go",
+        "types.go",
+        "user.go",
+    ],
+    importpath = "github.com/clappingmonkey/deplexity/internal/api",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/client",
+        "//internal/models",
+    ],
+)
+
+go_test(
+    name = "api_test",
+    srcs = ["threads_test.go"],
+    embed = [":api"],
+)

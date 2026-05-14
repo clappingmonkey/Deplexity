@@ -1,0 +1,16 @@
+# Common build flags
+build --enable_bzlmod
+
+# Test with race detector
+test --@rules_go//go/config:race
+
+# Stamping for version info
+build:release --stamp
+build:release --workspace_status_command=tools/workspace_status.sh
+
+# Performance
+build --remote_cache_compression
+common --noenable_workspace
+
+# Platform defaults
+build --incompatible_strict_action_env

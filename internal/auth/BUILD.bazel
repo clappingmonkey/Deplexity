@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "auth",
+    srcs = [
+        "browser.go",
+        "cookies.go",
+        "session.go",
+    ],
+    importpath = "github.com/clappingmonkey/deplexity/internal/auth",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/client",
+        "//internal/models",
+        "@com_github_go_rod_rod//:rod",
+        "@com_github_go_rod_rod//lib/launcher",
+        "@com_github_go_rod_rod//lib/proto",
+    ],
+)
+
+go_test(
+    name = "auth_test",
+    srcs = ["cookies_test.go"],
+    embed = [":auth"],
+    deps = ["//internal/models"],
+)

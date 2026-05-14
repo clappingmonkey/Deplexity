@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/clappingmonkey/deplexity/internal/client"
@@ -8,9 +9,9 @@ import (
 )
 
 // ListCollections fetches all user spaces/collections.
-func ListCollections(c *client.Client) ([]models.Space, error) {
+func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, error) {
 	var raw CollectionListResponse
-	if err := c.Get("/rest/collections/", &raw); err != nil {
+	if err := c.Get(ctx, "/rest/collections/", &raw); err != nil {
 		return nil, fmt.Errorf("failed to list collections: %w", err)
 	}
 

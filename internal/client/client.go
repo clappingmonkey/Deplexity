@@ -1,7 +1,9 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,19 +15,24 @@ import (
 )
 
 const (
-	baseURL   = "https://www.perplexity.ai"
-	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+	baseURL = "https://www.perplexity.ai"
+
+	// UserAgent is the Chrome user-agent string sent with all requests.
+	UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 	// DefaultDelay is the pause between consecutive API requests.
 	DefaultDelay = 500 * time.Millisecond
 )
 
+// ErrNotAuthenticated indicates the session is invalid or expired.
+var ErrNotAuthenticated = errors.New("authentication failed — run 'deplexity login' to refresh your session")
+
 // Client is an authenticated HTTP client for the Perplexity internal API.
 type Client struct {
-	http      *http.Client
-	baseURL   string
-	delay     time.Duration
-	lastReq   time.Time
+	http    *http.Client
+	baseURL string
+	delay   time.Duration
+	lastReq time.Time
 }
 
 // New creates a new authenticated client from a saved session.
@@ -66,12 +73,12 @@ func (c *Client) SetDelay(d time.Duration) {
 
 // Get performs an authenticated GET request to the given API path and
 // decodes the JSON response into dest.
-func (c *Client) Get(path string, dest interface{}) error {
+func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 	c.rateLimit()
 
 	fullURL := c.baseURL + path
 
-	req, err := http.NewRequest("GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return fmt.Errorf("could not create request for %s: %w", path, err)
 	}
@@ -85,7 +92,7 @@ func (c *Client) Get(path string, dest interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("authentication failed (HTTP %d) — try 'deplexity login' to refresh your session", resp.StatusCode)
+		return fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -103,12 +110,12 @@ func (c *Client) Get(path string, dest interface{}) error {
 }
 
 // GetRaw performs an authenticated GET request and returns the raw response body.
-func (c *Client) GetRaw(path string) ([]byte, error) {
+func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	c.rateLimit()
 
 	fullURL := c.baseURL + path
 
-	req, err := http.NewRequest("GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create request for %s: %w", path, err)
 	}
@@ -122,7 +129,7 @@ func (c *Client) GetRaw(path string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("authentication failed (HTTP %d) — try 'deplexity login' to refresh your session", resp.StatusCode)
+		return nil, fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -139,7 +146,7 @@ func (c *Client) GetRaw(path string) ([]byte, error) {
 
 // setHeaders adds the required headers to mimic a real browser request.
 func (c *Client) setHeaders(req *http.Request) {
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Referer", "https://www.perplexity.ai/")
 	req.Header.Set("Origin", "https://www.perplexity.ai")
 	req.Header.Set("Accept", "application/json, text/plain, */*")

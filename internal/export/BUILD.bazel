@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "export",
+    srcs = [
+        "json.go",
+        "markdown.go",
+        "pdf.go",
+        "util.go",
+    ],
+    importpath = "github.com/clappingmonkey/deplexity/internal/export",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/models",
+        "@com_github_gpdf_dev_gpdf//:gpdf",
+        "@com_github_gpdf_dev_gpdf//document",
+        "@com_github_gpdf_dev_gpdf//pdf",
+        "@com_github_gpdf_dev_gpdf//template",
+    ],
+)
+
+go_test(
+    name = "export_test",
+    srcs = [
+        "markdown_test.go",
+        "util_test.go",
+    ],
+    embed = [":export"],
+    deps = ["//internal/models"],
+)

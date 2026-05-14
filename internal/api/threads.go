@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -9,9 +10,9 @@ import (
 )
 
 // ListThreads fetches the list of all user threads.
-func ListThreads(c *client.Client) ([]models.Thread, error) {
+func ListThreads(ctx context.Context, c *client.Client) ([]models.Thread, error) {
 	var raw ThreadListResponse
-	if err := c.Get("/rest/threads/", &raw); err != nil {
+	if err := c.Get(ctx, "/rest/threads/", &raw); err != nil {
 		return nil, fmt.Errorf("failed to list threads: %w", err)
 	}
 
@@ -32,10 +33,10 @@ func ListThreads(c *client.Client) ([]models.Thread, error) {
 }
 
 // GetThread fetches the full detail of a single thread including all entries.
-func GetThread(c *client.Client, uuid string) (*models.Thread, error) {
+func GetThread(ctx context.Context, c *client.Client, uuid string) (*models.Thread, error) {
 	var raw ThreadDetailResponse
 	path := fmt.Sprintf("/rest/threads/%s", uuid)
-	if err := c.Get(path, &raw); err != nil {
+	if err := c.Get(ctx, path, &raw); err != nil {
 		return nil, fmt.Errorf("failed to get thread %s: %w", uuid, err)
 	}
 
