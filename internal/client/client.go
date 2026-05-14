@@ -75,82 +75,126 @@ func (c *Client) SetDelay(d time.Duration) {
 // Get performs an authenticated GET request to the given API path and
 // decodes the JSON response into dest.
 func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
-	c.rateLimit()
-
 	fullURL := c.baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-	if err != nil {
-		return fmt.Errorf("could not create request for %s: %w", path, err)
-	}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		c.rateLimit()
 
-	c.setHeaders(req)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("request to %s failed: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if c.verbose {
-		log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected response from %s: HTTP %d — %s", path, resp.StatusCode, string(body))
-	}
-
-	if dest != nil {
-		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
-			return fmt.Errorf("could not decode response from %s: %w", path, err)
+		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if err != nil {
+			return fmt.Errorf("could not create request for %s: %w", path, err)
 		}
+
+		c.setHeaders(req)
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return fmt.Errorf("request to %s failed: %w", path, err)
+		}
+
+		if c.verbose {
+			log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			resp.Body.Close()
+			backoff := computeBackoff(attempt, baseBackoff, maxBackoff)
+			if c.verbose {
+				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, attempt+1, maxRetries)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("unexpected response from %s: HTTP %d — %s", path, resp.StatusCode, string(body))
+		}
+
+		if dest != nil {
+			if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+				return fmt.Errorf("could not decode response from %s: %w", path, err)
+			}
+		}
+
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("request to %s failed: rate limited after %d retries", path, maxRetries)
 }
 
 // GetRaw performs an authenticated GET request and returns the raw response body.
 func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
-	c.rateLimit()
-
 	fullURL := c.baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not create request for %s: %w", path, err)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		c.rateLimit()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("could not create request for %s: %w", path, err)
+		}
+
+		c.setHeaders(req)
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request to %s failed: %w", path, err)
+		}
+
+		if c.verbose {
+			log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			resp.Body.Close()
+			backoff := computeBackoff(attempt, baseBackoff, maxBackoff)
+			if c.verbose {
+				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, attempt+1, maxRetries)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("could not read response from %s: %w", path, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected response from %s: HTTP %d — %s", path, resp.StatusCode, string(body))
+		}
+
+		return body, nil
 	}
 
-	c.setHeaders(req)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request to %s failed: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if c.verbose {
-		log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("could not read response from %s: %w", path, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected response from %s: HTTP %d — %s", path, resp.StatusCode, string(body))
-	}
-
-	return body, nil
+	return nil, fmt.Errorf("request to %s failed: rate limited after %d retries", path, maxRetries)
 }
 
 // setHeaders adds the required headers and cookies to mimic a real browser request.

@@ -16,7 +16,7 @@ const apiVersion = "2.18"
 func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
 	var allThreads []models.Thread
 	offset := 0
-	limit := 50
+	limit := 20 // API caps at 20 per page regardless of requested limit
 
 	for {
 		select {
