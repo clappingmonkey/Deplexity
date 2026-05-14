@@ -1,0 +1,125 @@
+name: Bazel CI
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        description: Run bazel test //...
+        type: boolean
+        default: false
+      run-build:
+        description: Run bazel build //cmd/deplexity
+        type: boolean
+        default: false
+      publish-platforms:
+        description: JSON array of platforms to build for release
+        type: string
+        default: ''
+      tag-name:
+        description: Release tag name (required for publish)
+        type: string
+        default: ''
+    outputs:
+      artifact-name:
+        description: Name of the uploaded artifact containing binaries
+        value: ${{ jobs.collect.outputs.artifact-name }}
+
+jobs:
+  test:
+    name: Test
+    if: inputs.run-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel-${{ github.ref_name }}-${{ hashFiles('MODULE.bazel.lock') }}
+          repository-cache: true
+
+      - name: Run tests
+        run: bazel test //... --config=ci
+
+  build:
+    name: Build
+    if: inputs.run-build
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel-${{ github.ref_name }}-${{ hashFiles('MODULE.bazel.lock') }}
+          repository-cache: true
+
+      - name: Build
+        run: bazel build //cmd/deplexity --config=ci
+
+  publish:
+    name: Build ${{ matrix.platform.config }}
+    if: inputs.publish-platforms != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(inputs.publish-platforms) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel-${{ github.ref_name }}-${{ hashFiles('MODULE.bazel.lock') }}
+          repository-cache: true
+
+      - name: Build binary
+        run: |
+          bazel build //cmd/deplexity --config=${{ matrix.platform.config }} --config=ci --config=release
+          mkdir -p dist
+          cp bazel-bin/cmd/deplexity/deplexity_/deplexity${{ matrix.platform.ext }} dist/${{ matrix.platform.output }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform.config }}
+          path: dist/
+          retention-days: 1
+
+  collect:
+    name: Collect Binaries
+    if: inputs.publish-platforms != ''
+    needs: [publish]
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: dist-${{ inputs.tag-name }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          echo "Contents of dist:"
+          ls -la
+          echo "Checksums:"
+          cat checksums.txt
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.tag-name }}
+          path: dist/
+          retention-days: 5

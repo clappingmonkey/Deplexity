@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: PR Title (Conventional Commits)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  ci:
+    name: CI
+    uses: ./.github/workflows/bazel-ci.yaml
+    with:
+      run-tests: true
+      run-build: true
+
+  gazelle:
+    name: Gazelle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel-${{ github.ref_name }}-${{ hashFiles('MODULE.bazel.lock') }}
+          repository-cache: true
+
+      - name: Check BUILD files are up to date
+        run: |
+          bazel run //:gazelle --config=ci
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "BUILD files are out of date. Run 'bazel run //:gazelle' and commit the changes."
+            git diff
+            exit 1
+          fi

@@ -1,16 +1,40 @@
-# Common build flags
+# Bazel configuration for deplexity
+
+# Build settings
 build --enable_bzlmod
-
-# Test with race detector
-test --@rules_go//go/config:race
-
-# Stamping for version info
-build:release --stamp
-build:release --workspace_status_command=tools/workspace_status.sh
-
-# Performance
-build --remote_cache_compression
+build --workspace_status_command=build/status.sh
 common --noenable_workspace
 
-# Platform defaults
+# Test settings
+test --test_output=errors
+test --test_verbose_timeout_warnings
+test --@rules_go//go/config:race
+
+# Build optimizations
+build --compilation_mode=opt
 build --incompatible_strict_action_env
+
+# Platform-specific configurations
+# Linux: static linking for portable binaries
+build:linux_amd64 --platforms=//build/platforms:linux_amd64
+build:linux_amd64 --@rules_go//go/config:static=true
+build:linux_arm64 --platforms=//build/platforms:linux_arm64
+build:linux_arm64 --@rules_go//go/config:static=true
+
+# macOS: dynamic linking (static not supported)
+build:darwin_amd64 --platforms=//build/platforms:darwin_amd64
+build:darwin_amd64 --@rules_go//go/config:static=false
+build:darwin_arm64 --platforms=//build/platforms:darwin_arm64
+build:darwin_arm64 --@rules_go//go/config:static=false
+
+# Windows: dynamic linking
+build:windows_amd64 --platforms=//build/platforms:windows_amd64
+build:windows_amd64 --@rules_go//go/config:static=false
+
+# CI configuration
+build:ci --noshow_progress
+build:ci --noshow_loading_progress
+test:ci --test_output=all
+
+# Release configuration: enable workspace stamping for version injection
+build:release --stamp

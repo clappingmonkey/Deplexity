@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Run CI only, skip release-please and publish
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/bazel-ci.yaml
+    with:
+      run-tests: true
+      run-build: true
+
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    needs: [ci]
+    if: ${{ !inputs.dry-run }}
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: tibdex/github-app-token@v2
+        id: app-token
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: .github/release-please-config.json
+          manifest-file: .github/release-please-manifest.json
+          token: ${{ steps.app-token.outputs.token }}
+
+  publish:
+    name: Publish
+    needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/bazel-ci.yaml
+    with:
+      publish-platforms: '[{"config":"linux_amd64","output":"deplexity-linux-amd64","ext":""},{"config":"linux_arm64","output":"deplexity-linux-arm64","ext":""},{"config":"darwin_amd64","output":"deplexity-darwin-amd64","ext":""},{"config":"darwin_arm64","output":"deplexity-darwin-arm64","ext":""},{"config":"windows_amd64","output":"deplexity-windows-amd64.exe","ext":".exe"}]'
+      tag-name: ${{ needs.release-please.outputs.tag_name }}
+
+  upload-release:
+    name: Upload to Release
+    runs-on: ubuntu-latest
+    needs: [release-please, publish]
+    if: needs.release-please.outputs.release_created == 'true'
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.release-please.outputs.tag_name }}
+          path: dist
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: dist/*

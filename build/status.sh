@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generates workspace status for Bazel stamping.
-# Used with: build:release --workspace_status_command=tools/workspace_status.sh
+# Used with: build:release --stamp
 
 set -euo pipefail
 
