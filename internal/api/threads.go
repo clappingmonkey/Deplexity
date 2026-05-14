@@ -12,12 +12,19 @@ import (
 const apiVersion = "2.18"
 
 // ListThreads fetches all user threads, paginating through list_recent.
-func ListThreads(ctx context.Context, c *client.Client) ([]models.Thread, error) {
+// If onProgress is non-nil, it is called after each page with the total count so far.
+func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
 	var allThreads []models.Thread
 	offset := 0
 	limit := 50
 
 	for {
+		select {
+		case <-ctx.Done():
+			return allThreads, ctx.Err()
+		default:
+		}
+
 		var raw ThreadListResponse
 		path := fmt.Sprintf("/rest/thread/list_recent?exclude_asi=false&version=%s&source=default&limit=%d&offset=%d", apiVersion, limit, offset)
 		if err := c.Get(ctx, path, &raw); err != nil {
@@ -35,6 +42,10 @@ func ListThreads(ctx context.Context, c *client.Client) ([]models.Thread, error)
 				Slug:       t.UUID,
 				Bookmarked: false,
 			})
+		}
+
+		if onProgress != nil {
+			onProgress(len(allThreads))
 		}
 
 		// If we got fewer than limit, we've reached the end.

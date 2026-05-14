@@ -95,11 +95,13 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 
 	if cmd.Threads {
 		fmt.Print("Fetching thread list...")
-		threads, err = api.ListThreads(ctx, c)
+		threads, err = api.ListThreads(ctx, c, func(n int) {
+			fmt.Printf("\rFetching thread list... %d", n)
+		})
 		if err != nil {
 			return err
 		}
-		fmt.Printf(" %d threads found\n", len(threads))
+		fmt.Printf("\rFetching thread list... %d threads found\n", len(threads))
 	}
 
 	if cmd.Spaces {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
@@ -165,9 +166,13 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("x-app-apiclient", "default")
 	req.Header.Set("x-app-apiversion", "2.18")
 
-	// Add cookies directly to avoid net/http cookie value validation warnings.
+	// Add cookies directly as raw header to avoid net/http cookie value validation warnings.
+	var cookieParts []string
 	for _, cookie := range c.cookies {
-		req.AddCookie(cookie)
+		cookieParts = append(cookieParts, cookie.Name+"="+cookie.Value)
+	}
+	if len(cookieParts) > 0 {
+		req.Header.Set("Cookie", strings.Join(cookieParts, "; "))
 	}
 
 	if c.verbose {
