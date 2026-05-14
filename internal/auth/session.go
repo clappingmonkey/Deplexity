@@ -1,0 +1,95 @@
+package auth
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"time"
+
+	"github.com/clappingmonkey/deplexity/internal/models"
+)
+
+const (
+	sessionValidateURL = "https://www.perplexity.ai/api/auth/session"
+	userAgent          = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+// SessionInfo holds the result of validating a session.
+type SessionInfo struct {
+	Valid     bool
+	Email     string
+	ExpiresAt time.Time
+}
+
+// ValidateSession checks if the saved session is still valid by calling
+// Perplexity's NextAuth session endpoint.
+func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not create cookie jar: %w", err)
+	}
+
+	perplexityURL, _ := url.Parse("https://www.perplexity.ai")
+	var httpCookies []*http.Cookie
+	for _, c := range session.Cookies {
+		httpCookies = append(httpCookies, &http.Cookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Domain:   c.Domain,
+			Path:     c.Path,
+			Secure:   c.Secure,
+			HttpOnly: c.HTTPOnly,
+		})
+	}
+	jar.SetCookies(perplexityURL, httpCookies)
+
+	client := &http.Client{
+		Jar:     jar,
+		Timeout: 15 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", sessionValidateURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not create request: %w", err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Referer", "https://www.perplexity.ai/")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("session validation request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return &SessionInfo{Valid: false}, nil
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return &SessionInfo{Valid: false}, nil
+	}
+
+	// NextAuth returns an empty object {} for invalid sessions
+	// and a populated object with user info for valid ones.
+	if len(result) == 0 {
+		return &SessionInfo{Valid: false}, nil
+	}
+
+	info := &SessionInfo{Valid: true}
+
+	if user, ok := result["user"].(map[string]interface{}); ok {
+		if email, ok := user["email"].(string); ok {
+			info.Email = email
+		}
+	}
+	if expires, ok := result["expires"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, expires); err == nil {
+			info.ExpiresAt = t
+		}
+	}
+
+	return info, nil
+}

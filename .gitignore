@@ -1,0 +1,29 @@
+# Binary output
+bin/
+deplexity
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Export output (don't commit exported data)
+deplexity-export/
+
+# Session data (contains secrets)
+session.json
