@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	perplexityURL    = "https://www.perplexity.ai/"
+	perplexityURL     = "https://www.perplexity.ai/"
 	sessionCookieName = "__Secure-next-auth.session-token"
 	csrfCookieName    = "next-auth.csrf-token"
 	pollInterval      = 2 * time.Second
@@ -21,32 +21,35 @@ const (
 
 // BrowserLogin opens a visible browser for the user to log in to Perplexity,
 // waits for the session cookie, and returns the saved session.
+// If Chrome/Chromium is not installed, it automatically downloads one via Rod.
 func BrowserLogin() (*models.SavedSession, error) {
 	fmt.Println("Launching browser for Perplexity login...")
 	fmt.Println("Please log in to your Perplexity account in the browser window.")
 	fmt.Printf("Waiting up to %s for authentication...\n\n", loginTimeout)
 
-	// Find browser path
+	launch := launcher.New().
+		Headless(false).
+		Set("disable-blink-features", "AutomationControlled")
+
+	// Try to find an installed browser first, otherwise Rod will auto-download Chromium
 	path, hasPath := launcher.LookPath()
-	if !hasPath {
-		return nil, fmt.Errorf("could not find Chrome/Chromium browser — please install Chrome")
+	if hasPath {
+		launch = launch.Bin(path)
+	} else {
+		fmt.Println("No Chrome/Chromium found — downloading Chromium automatically (~80MB, one-time)...")
 	}
 
-	// Launch a visible browser (not headless)
-	u := launcher.New().
-		Bin(path).
-		Headless(false).
-		Set("disable-blink-features", "AutomationControlled").
-		MustLaunch()
+	u, err := launch.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("could not launch browser: %w", err)
+	}
 
 	browser := rod.New().ControlURL(u).MustConnect()
 	defer browser.MustClose()
 
-	// Navigate to Perplexity
 	page := browser.MustPage(perplexityURL)
 	defer page.MustClose()
 
-	// Wait for the user to complete login by polling for the session cookie.
 	deadline := time.Now().Add(loginTimeout)
 	for {
 		if time.Now().After(deadline) {
@@ -105,7 +108,7 @@ func findSessionFromCookies(cookies []*proto.NetworkCookie) *models.SavedSession
 		SessionToken: sessionToken,
 		CSRFToken:    csrfToken,
 		Cookies:      allCookies,
-		ExpiresAt:    time.Now().Add(7 * 24 * time.Hour), // ~7 day expiry
+		ExpiresAt:    time.Now().Add(7 * 24 * time.Hour),
 	}
 
 	return session

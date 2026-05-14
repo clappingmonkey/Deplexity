@@ -93,3 +93,34 @@ func ValidateSession(session *models.SavedSession) (*SessionInfo, error) {
 
 	return info, nil
 }
+
+// CookieLogin creates a session from a manually provided session token,
+// bypassing browser-based authentication entirely.
+func CookieLogin(token string) (*models.SavedSession, error) {
+	session := &models.SavedSession{
+		SessionToken: token,
+		Cookies: []models.Cookie{
+			{
+				Name:     "__Secure-next-auth.session-token",
+				Value:    token,
+				Domain:   ".perplexity.ai",
+				Path:     "/",
+				Secure:   true,
+				HTTPOnly: true,
+			},
+		},
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}
+
+	fmt.Println("Validating session token...")
+	info, err := ValidateSession(session)
+	if err != nil {
+		return nil, fmt.Errorf("could not validate token: %w", err)
+	}
+	if !info.Valid {
+		return nil, fmt.Errorf("invalid or expired token — please check the value and try again")
+	}
+
+	fmt.Printf("Token valid for: %s\n", info.Email)
+	return session, nil
+}
