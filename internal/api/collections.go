@@ -9,24 +9,9 @@ import (
 )
 
 // ListCollections fetches all user spaces/collections.
+// TODO: The endpoint for collections in the new API is unknown.
+// Previously /rest/collections/, now likely something else.
 func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, error) {
-	var raw CollectionListResponse
-	if err := c.Get(ctx, "/rest/collections/", &raw); err != nil {
-		return nil, fmt.Errorf("failed to list collections: %w", err)
-	}
-
-	spaces := make([]models.Space, 0, len(raw))
-	for _, col := range raw {
-		spaces = append(spaces, models.Space{
-			UUID:         col.UUID,
-			Name:         col.Name,
-			Description:  col.Description,
-			Instructions: col.Instructions,
-			CreatedAt:    parseTime(col.CreatedAt),
-			UpdatedAt:    parseTime(col.UpdatedAt),
-			ThreadUUIDs:  col.ThreadUUIDs,
-		})
-	}
-
-	return spaces, nil
+	_ = c
+	return nil, fmt.Errorf("collections endpoint not yet discovered — check DevTools for the correct path")
 }

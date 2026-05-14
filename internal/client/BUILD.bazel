@@ -5,10 +5,15 @@ go_library(
     srcs = [
         "client.go",
         "ratelimit.go",
+        "transport.go",
     ],
     importpath = "github.com/clappingmonkey/deplexity/internal/client",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/models"],
+    deps = [
+        "//internal/models",
+        "@com_github_refraction_networking_utls//:utls",
+        "@org_golang_x_net//http2",
+    ],
 )
 
 go_test(

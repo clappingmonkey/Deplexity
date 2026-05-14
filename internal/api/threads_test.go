@@ -53,21 +53,19 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
-func TestThreadSummaryMapping(t *testing.T) {
-	raw := ThreadSummary{
-		UUID:       "abc-123",
-		Slug:       "test-slug",
-		Title:      "Test Thread",
-		CreatedAt:  "2024-01-01T00:00:00Z",
-		UpdatedAt:  "2024-01-02T00:00:00Z",
-		SpaceUUID:  "space-1",
-		Bookmarked: true,
+func TestThreadListItemMapping(t *testing.T) {
+	raw := ThreadListItem{
+		UUID:    "abc-123",
+		Title:   "Test Thread",
+		Link:    "/search/abc-123",
+		Variant: "thread",
+		Status:  "completed",
 	}
 
 	if raw.UUID != "abc-123" {
 		t.Errorf("unexpected UUID: %s", raw.UUID)
 	}
-	if raw.Bookmarked != true {
-		t.Error("expected bookmarked to be true")
+	if raw.Title != "Test Thread" {
+		t.Errorf("unexpected Title: %s", raw.Title)
 	}
 }

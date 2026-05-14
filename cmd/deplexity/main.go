@@ -26,6 +26,7 @@ var (
 
 // CLI defines the top-level command structure.
 type CLI struct {
+	Verbose bool       `short:"v" help:"Enable verbose/debug output."`
 	Login   LoginCmd   `cmd:"" help:"Authenticate with Perplexity (opens browser or accepts --cookie)."`
 	Export  ExportCmd  `cmd:"" help:"Export threads, spaces, and profile data."`
 	Status  StatusCmd  `cmd:"" help:"Show current session status and rate limits."`
@@ -68,6 +69,8 @@ type ExportCmd struct {
 	Spaces  bool     `help:"Export spaces/collections." default:"true" negatable:""`
 	Profile bool     `help:"Export user profile." default:"true" negatable:""`
 	Delay   int      `help:"Delay between API requests in milliseconds." default:"500"`
+
+	verbose bool // set by main before Run
 }
 
 func (cmd *ExportCmd) Run(ctx context.Context) error {
@@ -81,6 +84,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		return err
 	}
 	c.SetDelay(time.Duration(cmd.Delay) * time.Millisecond)
+	c.SetVerbose(cmd.verbose)
 
 	fmt.Printf("Exporting to: %s\n", cmd.Output)
 	fmt.Printf("Formats: %v\n\n", cmd.Format)
@@ -102,9 +106,11 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		fmt.Print("Fetching spaces...")
 		spaces, err = api.ListCollections(ctx, c)
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, " skipped (%v)\n", err)
+			spaces = nil
+		} else {
+			fmt.Printf(" %d spaces found\n", len(spaces))
 		}
-		fmt.Printf(" %d spaces found\n", len(spaces))
 	}
 
 	if cmd.Profile {
@@ -297,6 +303,9 @@ func main() {
 		kong.Vars{"version": version},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 	)
+
+	// Propagate verbose flag to subcommands that need it.
+	cli.Export.verbose = cli.Verbose
 
 	err := kctx.Run()
 	kctx.FatalIfErrorf(err)

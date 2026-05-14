@@ -18,5 +18,7 @@ use_repo(
     "com_github_alecthomas_kong",
     "com_github_go_rod_rod",
     "com_github_gpdf_dev_gpdf",
+    "com_github_refraction_networking_utls",
     "com_github_schollz_progressbar_v3",
+    "org_golang_x_net",
 )

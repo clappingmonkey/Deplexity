@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
@@ -33,16 +32,12 @@ type Client struct {
 	baseURL string
 	delay   time.Duration
 	lastReq time.Time
+	cookies []*http.Cookie
+	verbose bool
 }
 
 // New creates a new authenticated client from a saved session.
 func New(session *models.SavedSession) (*Client, error) {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not create cookie jar: %w", err)
-	}
-
-	perplexityURL, _ := url.Parse(baseURL)
 	var cookies []*http.Cookie
 	for _, c := range session.Cookies {
 		cookies = append(cookies, &http.Cookie{
@@ -54,16 +49,21 @@ func New(session *models.SavedSession) (*Client, error) {
 			HttpOnly: c.HTTPOnly,
 		})
 	}
-	jar.SetCookies(perplexityURL, cookies)
 
 	return &Client{
 		http: &http.Client{
-			Jar:     jar,
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: newChromeTransport(),
 		},
 		baseURL: baseURL,
 		delay:   DefaultDelay,
+		cookies: cookies,
 	}, nil
+}
+
+// SetVerbose enables debug output.
+func (c *Client) SetVerbose(v bool) {
+	c.verbose = v
 }
 
 // SetDelay configures the minimum time between consecutive requests.
@@ -90,6 +90,10 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 		return fmt.Errorf("request to %s failed: %w", path, err)
 	}
 	defer resp.Body.Close()
+
+	if c.verbose {
+		log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
@@ -128,6 +132,10 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
+	if c.verbose {
+		log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+	}
+
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
 	}
@@ -144,16 +152,27 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	return body, nil
 }
 
-// setHeaders adds the required headers to mimic a real browser request.
+// setHeaders adds the required headers and cookies to mimic a real browser request.
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Referer", "https://www.perplexity.ai/")
 	req.Header.Set("Origin", "https://www.perplexity.ai")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("x-app-apiclient", "default")
+	req.Header.Set("x-app-apiversion", "2.18")
+
+	// Add cookies directly to avoid net/http cookie value validation warnings.
+	for _, cookie := range c.cookies {
+		req.AddCookie(cookie)
+	}
+
+	if c.verbose {
+		log.Printf("[DEBUG] %s %s", req.Method, req.URL.String())
+	}
 }
 
 // rateLimit enforces the configured delay between requests.
