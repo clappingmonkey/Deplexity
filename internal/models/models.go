@@ -70,6 +70,19 @@ type ExportCounts struct {
 	Sources   int `json:"sources"`
 }
 
+// ThreadIndex holds the cached list of thread UUIDs for resumable export.
+type ThreadIndex struct {
+	Threads   []ThreadRef `json:"threads"`
+	Total     int         `json:"total"`
+	FetchedAt time.Time   `json:"fetched_at"`
+}
+
+// ThreadRef is a lightweight reference to a thread (UUID + title only).
+type ThreadRef struct {
+	UUID  string `json:"uuid"`
+	Title string `json:"title"`
+}
+
 // SavedSession represents the persisted authentication session.
 type SavedSession struct {
 	SessionToken string    `json:"session_token"`

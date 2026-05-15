@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -12,6 +13,66 @@ import (
 // JSONExporter writes data as formatted JSON files.
 type JSONExporter struct {
 	OutputDir string
+}
+
+// SaveThreadIndex persists the lightweight thread UUID list for resumable export.
+func (e *JSONExporter) SaveThreadIndex(threads []models.Thread) error {
+	if err := os.MkdirAll(e.OutputDir, 0755); err != nil {
+		return fmt.Errorf("could not create output directory: %w", err)
+	}
+
+	refs := make([]models.ThreadRef, 0, len(threads))
+	for _, t := range threads {
+		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title})
+	}
+
+	index := models.ThreadIndex{
+		Threads:   refs,
+		Total:     len(refs),
+		FetchedAt: time.Now().UTC(),
+	}
+
+	return writeJSON(filepath.Join(e.OutputDir, "thread_index.json"), index)
+}
+
+// LoadThreadIndex reads the cached thread index from disk.
+// Returns nil if the file does not exist.
+func (e *JSONExporter) LoadThreadIndex() (*models.ThreadIndex, error) {
+	path := filepath.Join(e.OutputDir, "thread_index.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var index models.ThreadIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, err
+	}
+	return &index, nil
+}
+
+// ThreadDetailExists checks whether a thread's detail JSON already exists on disk.
+func (e *JSONExporter) ThreadDetailExists(uuid string) bool {
+	path := filepath.Join(e.OutputDir, "threads", sanitizeFilename(uuid), "thread.json")
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// LoadThread reads a single thread from its JSON file on disk.
+func (e *JSONExporter) LoadThread(uuid string) (*models.Thread, error) {
+	path := filepath.Join(e.OutputDir, "threads", sanitizeFilename(uuid), "thread.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var thread models.Thread
+	if err := json.Unmarshal(data, &thread); err != nil {
+		return nil, err
+	}
+	return &thread, nil
 }
 
 // ExportThread writes a single thread as a JSON file.
