@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -68,8 +71,9 @@ type ExportCmd struct {
 	Threads bool     `help:"Export threads." default:"true" negatable:""`
 	Spaces  bool     `help:"Export spaces/collections." default:"true" negatable:""`
 	Profile bool     `help:"Export user profile." default:"true" negatable:""`
-	Delay   int      `help:"Delay between API requests in milliseconds." default:"500"`
-	Refresh bool     `help:"Force re-fetch of thread list even if cached." default:"false"`
+	Delay      int      `help:"Delay between API requests in milliseconds." default:"500"`
+	Refresh    bool     `help:"Force re-fetch of thread list even if cached." default:"false"`
+	PDFWorkers int      `help:"Number of parallel workers for PDF generation (0 = auto-detect CPU count)." default:"0" name:"pdf-workers"`
 
 	verbose bool // set by main before Run
 }
@@ -395,25 +399,97 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 	case "pdf":
 		exp := export.NewPDFExporter(cmd.Output)
 		defer exp.Close()
-		for i := range threads {
-			select {
-			case <-ctx.Done():
-				fmt.Printf("\n  Cancelling...\n")
+
+		if total > 0 {
+			// Determine worker count.
+			workers := cmd.PDFWorkers
+			maxWorkers := runtime.NumCPU()
+			if workers <= 0 {
+				workers = maxWorkers
+			}
+			if workers > maxWorkers {
+				workers = maxWorkers
+			}
+			if workers > total {
+				workers = total
+			}
+
+			var rendered atomic.Int64
+			workCh := make(chan int, workers)
+			errCh := make(chan error, 1)
+			pdfCtx, pdfCancel := context.WithCancel(ctx)
+			defer pdfCancel()
+			var wg sync.WaitGroup
+
+			// Progress printer (100ms ticker, normal mode only).
+			progressDone := make(chan struct{})
+			if !cmd.verbose {
+				go func() {
+					ticker := time.NewTicker(100 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							fmt.Printf("\r  PDF: %d/%d threads (%d workers)", rendered.Load(), total, workers)
+						case <-progressDone:
+							return
+						}
+					}
+				}()
+			}
+
+			// Spawn workers.
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range workCh {
+						if cmd.verbose {
+							fmt.Printf("  PDF: [%d/%d] %s\n", rendered.Load()+1, total, threads[i].Title)
+						}
+						if err := exp.ExportThread(&threads[i]); err != nil {
+							select {
+							case errCh <- err:
+							default:
+							}
+							pdfCancel()
+							return
+						}
+						rendered.Add(1)
+					}
+				}()
+			}
+
+			// Feed work.
+		feedLoop:
+			for i := range threads {
+				select {
+				case <-pdfCtx.Done():
+					break feedLoop
+				case workCh <- i:
+				}
+			}
+			close(workCh)
+			wg.Wait()
+			close(progressDone)
+
+			// Final progress line.
+			n := rendered.Load()
+			if n < int64(total) && ctx.Err() != nil {
+				fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
+				fmt.Printf("  Cancelling...\n")
 				return ctx.Err()
+			}
+			fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
+
+			// Check for worker errors.
+			select {
+			case err := <-errCh:
+				return err
 			default:
 			}
-			if cmd.verbose {
-				fmt.Printf("  PDF: [%d/%d] %s\n", i+1, total, threads[i].Title)
-			} else {
-				fmt.Printf("\r  PDF: %d/%d threads", i+1, total)
-			}
-			if err := exp.ExportThread(&threads[i]); err != nil {
-				return err
-			}
 		}
-		if total > 0 {
-			fmt.Println()
-		}
+
 		if len(spaces) > 0 {
 			if err := exp.ExportSpaces(ctx, spaces, threads); err != nil {
 				return err
@@ -480,11 +556,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// Restore default signal handling after first Ctrl+C so a second one force-exits.
+	// Print message only on actual Ctrl+C; second Ctrl+C force-kills via default OS handler.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
 	go func() {
-		<-ctx.Done()
+		<-sigCh
 		fmt.Fprintf(os.Stderr, "\nInterrupted, finishing current operation... (Ctrl+C again to force quit)\n")
-		cancel()
+		signal.Stop(sigCh)
 	}()
 
 	var cli CLI

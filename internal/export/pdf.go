@@ -3,8 +3,10 @@ package export
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	gpdf "github.com/gpdf-dev/gpdf"
 	"github.com/gpdf-dev/gpdf/document"
@@ -19,7 +21,27 @@ type PDFExporter struct {
 	OutputDir string
 }
 
-// NewPDFExporter creates a PDF exporter. No browser required — pure Go rendering.
+// domainFromURL extracts the hostname from a URL, stripping "www." prefix.
+func domainFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	host := u.Host
+	host = strings.TrimPrefix(host, "www.")
+	return host
+}
+
+// formatSourceLine formats a source as "N. Title (domain)" or "N. domain" if no title.
+func formatSourceLine(n int, title, rawURL string) string {
+	domain := domainFromURL(rawURL)
+	if title == "" {
+		return fmt.Sprintf("%d. %s", n, domain)
+	}
+	return fmt.Sprintf("%d. %s (%s)", n, title, domain)
+}
+
+// NewPDFExporter creates a PDFExporter writing to the given output directory.
 func NewPDFExporter(outputDir string) *PDFExporter {
 	return &PDFExporter{OutputDir: outputDir}
 }
@@ -155,31 +177,11 @@ func writeThreadPDF(dir string, thread *models.Thread) error {
 				r.Col(12, func(c *template.ColBuilder) {
 					c.Spacer(document.Mm(3))
 					c.Text("Sources", template.Bold(), template.FontSize(11))
-				})
-			})
-
-			headers := []string{"#", "Title", "URL"}
-			rows := make([][]string, len(entry.Sources))
-			for j, src := range entry.Sources {
-				srcTitle := src.Title
-				if srcTitle == "" {
-					srcTitle = src.URL
-				}
-				rows[j] = []string{fmt.Sprintf("%d", j+1), srcTitle, src.URL}
-			}
-
-			page.AutoRow(func(r *template.RowBuilder) {
-				r.Col(12, func(c *template.ColBuilder) {
-					c.Table(
-						headers,
-						rows,
-						template.ColumnWidths(5, 45, 50),
-						template.TableHeaderStyle(
-							template.TextColor(pdf.White),
-							template.BgColor(pdf.RGBHex(0x1A73E8)),
-						),
-						template.TableStripe(pdf.RGBHex(0xF5F5F5)),
-					)
+					c.Spacer(document.Mm(1))
+					for j, src := range entry.Sources {
+						label := formatSourceLine(j+1, src.Title, src.URL)
+						c.Text(label, template.FontSize(9), template.TextColor(pdf.Gray(0.3)))
+					}
 				})
 			})
 		}
