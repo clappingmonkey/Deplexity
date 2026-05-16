@@ -13,13 +13,13 @@ Perplexity AI has no official data export feature. Your research threads, curate
 - **Full ownership** of your data in open formats
 - **Offline archives** you can search, version-control, or feed into other tools
 - **PDF reports** with source tables — no browser or LaTeX needed
-- **Incremental backups** via scripting/cron
+- **Incremental backups** — resumable exports pick up where they left off
 
 ---
 
 ## Installation
 
-### From source (requires Go 1.22+)
+### From source (requires Go 1.26+)
 
 ```bash
 go install github.com/clappingmonkey/deplexity/cmd/deplexity@latest
@@ -90,6 +90,12 @@ deplexity export -f pdf
 # Export all formats
 deplexity export -f json -f markdown -f pdf
 
+# Re-fetch thread index even if a cached one exists
+deplexity export --refresh
+
+# Verbose output (show API calls and timing)
+deplexity export -v
+
 # Export only threads (skip spaces/profile)
 deplexity export --no-spaces --no-profile
 
@@ -97,24 +103,30 @@ deplexity export --no-spaces --no-profile
 deplexity export --delay 1000
 ```
 
+### Resumable Exports
+
+Export runs in two phases:
+
+1. **Phase 1 — Index**: Fetches the list of all threads and caches it in `thread_index.json`. If interrupted, re-running `deplexity export` resumes from the cached index.
+2. **Phase 2 — Details**: Fetches full content for each thread. Already-fetched threads are skipped automatically.
+
+Use `--refresh` to force re-fetching the thread index (e.g., after new conversations).
+
 ### Output Structure
 
 ```
 deplexity-export/
-├── manifest.json              # Export metadata
+├── manifest.json              # Export metadata (timestamp, counts, version)
+├── thread_index.json          # Cached thread list (for resumable exports)
 ├── profile/
 │   └── user.json
 ├── spaces/
-│   ├── index.json
-│   └── my-space/
+│   └── <space-slug>/
 │       └── space.json
 └── threads/
-    ├── index.json
-    └── my-research-thread/
+    └── <thread-uuid>/
         ├── thread.json        # Full thread with entries + sources
-        ├── thread.md          # Human-readable Markdown
-        ├── thread.pdf         # PDF with source tables
-        └── sources.json       # All citations extracted
+        └── thread.md          # Human-readable Markdown
 ```
 
 ---
@@ -132,8 +144,8 @@ deplexity-export/
 ## How It Works
 
 1. **Login** — Opens a real Chrome window (or uses a provided cookie). Captures the `__Secure-next-auth.session-token` cookie after you authenticate normally.
-2. **Fetch** — Uses Perplexity's internal REST API with your session cookie. Rate-limited by default to avoid triggering anti-abuse.
-3. **Export** — Converts raw API responses into clean domain models, then renders them in your chosen format(s).
+2. **Fetch** — Uses Perplexity's internal REST API with your session cookie. TLS fingerprinting matches a real Chrome browser via [utls](https://github.com/refraction-networking/utls). Adaptive rate limiting keeps requests under Perplexity's anti-abuse threshold (~2 req/s).
+3. **Export** — Converts raw API responses into clean domain models, then renders them in your chosen format(s). Exports are resumable — interrupted runs pick up where they left off.
 
 No credentials are stored — only the session cookie (which expires in ~7 days).
 
@@ -173,7 +185,7 @@ cmd/deplexity/       CLI entrypoint (Kong framework)
 internal/
 ├── api/             Raw API types + data fetching
 ├── auth/            Browser login, cookie management, session validation
-├── client/          Authenticated HTTP client with rate limiting + retry
+├── client/          HTTP client: utls transport, adaptive rate limiting, retry with backoff
 ├── export/          JSON, Markdown, and PDF renderers
 └── models/          Clean domain models (decoupled from API shape)
 ```
@@ -182,13 +194,16 @@ Key design decisions:
 - **Pure Go** — Single static binary, no CGO, no external tools
 - **Context propagation** — All operations are cancellable (Ctrl+C works instantly)
 - **Layered architecture** — API types are separate from domain models; exporters are independent
+- **Cloudflare bypass** — Chrome TLS fingerprint via `refraction-networking/utls`
+- **Adaptive rate limiting** — Delay doubles after 429s, halves after sustained success
+- **Two-phase export** — Thread index cached separately; detail fetching skips completed threads
 - **PDF via gpdf** — Declarative grid layout, no browser/wkhtmltopdf/LaTeX dependency
 
 ---
 
 ## Requirements
 
-- **Go 1.22+** (build only)
+- **Go 1.26+** (build only)
 - **Chrome/Chromium** (for `deplexity login` only — auto-downloaded if missing)
 - No runtime dependencies for `export` or `login --cookie`
 
@@ -199,7 +214,7 @@ Key design decisions:
 - Session tokens are stored with `0600` permissions in `~/.config/deplexity/`
 - No credentials are ever logged or transmitted to third parties
 - The tool only communicates with `perplexity.ai`
-- All HTTP requests use the same headers as a real browser session
+- All HTTP requests use the same TLS fingerprint and headers as a real Chrome session
 
 ---
 
