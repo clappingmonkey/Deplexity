@@ -105,7 +105,7 @@ func (e *MarkdownExporter) ExportSpaces(spaces []models.Space) error {
 			sb.WriteString(fmt.Sprintf("**AI Instructions:**\n\n> %s\n\n", space.Instructions))
 		}
 		sb.WriteString(fmt.Sprintf("- **UUID:** %s\n", space.UUID))
-		if !space.CreatedAt.IsZero() {
+		if space.CreatedAt != nil {
 			sb.WriteString(fmt.Sprintf("- **Created:** %s\n", space.CreatedAt.Format("2006-01-02 15:04:05 UTC")))
 		}
 		if len(space.ThreadUUIDs) > 0 {
