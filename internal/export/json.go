@@ -124,8 +124,8 @@ func (e *JSONExporter) ExportThreadIndex(threads []models.Thread) error {
 	return writeJSON(filepath.Join(dir, "index.json"), index)
 }
 
-// ExportSpaces writes the spaces/collections data.
-func (e *JSONExporter) ExportSpaces(spaces []models.Space) error {
+// ExportSpaces writes the spaces/collections data and copies thread files into each space folder.
+func (e *JSONExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
 	dir := filepath.Join(e.OutputDir, "spaces")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create spaces directory: %w", err)
@@ -135,6 +135,12 @@ func (e *JSONExporter) ExportSpaces(spaces []models.Space) error {
 		return err
 	}
 
+	// Build UUID -> thread lookup.
+	threadByUUID := make(map[string]*models.Thread, len(threads))
+	for i := range threads {
+		threadByUUID[threads[i].UUID] = &threads[i]
+	}
+
 	for _, space := range spaces {
 		spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
 		if err := os.MkdirAll(spaceDir, 0755); err != nil {
@@ -142,6 +148,31 @@ func (e *JSONExporter) ExportSpaces(spaces []models.Space) error {
 		}
 		if err := writeJSON(filepath.Join(spaceDir, "space.json"), space); err != nil {
 			return err
+		}
+
+		// Copy thread JSON files into the space folder.
+		for _, uuid := range space.ThreadUUIDs {
+			thread := threadByUUID[uuid]
+			if thread == nil {
+				continue
+			}
+			threadDir := filepath.Join(spaceDir, "threads", sanitizeFilename(threadSlug(thread)))
+			if err := os.MkdirAll(threadDir, 0755); err != nil {
+				return fmt.Errorf("could not create space thread directory: %w", err)
+			}
+			if err := writeJSON(filepath.Join(threadDir, "thread.json"), thread); err != nil {
+				return err
+			}
+			// Write sources separately.
+			var allSources []models.Source
+			for _, entry := range thread.Entries {
+				allSources = append(allSources, entry.Sources...)
+			}
+			if len(allSources) > 0 {
+				if err := writeJSON(filepath.Join(threadDir, "sources.json"), allSources); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -164,11 +195,7 @@ func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
 
 // threadDir returns the output directory for a thread.
 func (e *JSONExporter) threadDir(thread *models.Thread) string {
-	slug := thread.Slug
-	if slug == "" {
-		slug = thread.UUID
-	}
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(slug))
+	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
 }
 
 // writeJSON writes data as indented JSON to a file.

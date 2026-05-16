@@ -3,6 +3,8 @@ package export
 import (
 	"regexp"
 	"strings"
+
+	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
 var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
@@ -28,4 +30,12 @@ func sanitizeFilename(name string) string {
 	}
 
 	return strings.ToLower(name)
+}
+
+// threadSlug returns the slug (or UUID fallback) for a thread's directory name.
+func threadSlug(t *models.Thread) string {
+	if t.Slug != "" {
+		return t.Slug
+	}
+	return t.UUID
 }

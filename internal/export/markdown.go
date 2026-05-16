@@ -17,6 +17,11 @@ type MarkdownExporter struct {
 // ExportThread writes a single thread as a formatted Markdown file.
 func (e *MarkdownExporter) ExportThread(thread *models.Thread) error {
 	dir := e.threadDir(thread)
+	return writeThreadMarkdown(dir, thread)
+}
+
+// writeThreadMarkdown writes a thread as Markdown into the given directory.
+func writeThreadMarkdown(dir string, thread *models.Thread) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create thread directory: %w", err)
 	}
@@ -86,8 +91,8 @@ func (e *MarkdownExporter) ExportThread(thread *models.Thread) error {
 	return nil
 }
 
-// ExportSpaces writes a summary Markdown file for all spaces.
-func (e *MarkdownExporter) ExportSpaces(spaces []models.Space) error {
+// ExportSpaces writes a summary Markdown file for all spaces and copies thread markdown into each space folder.
+func (e *MarkdownExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
 	dir := filepath.Join(e.OutputDir, "spaces")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create spaces directory: %w", err)
@@ -119,6 +124,25 @@ func (e *MarkdownExporter) ExportSpaces(spaces []models.Space) error {
 		return fmt.Errorf("could not write spaces markdown: %w", err)
 	}
 
+	// Copy thread markdown into each space folder.
+	threadByUUID := make(map[string]*models.Thread, len(threads))
+	for i := range threads {
+		threadByUUID[threads[i].UUID] = &threads[i]
+	}
+	for _, space := range spaces {
+		for _, uuid := range space.ThreadUUIDs {
+			thread := threadByUUID[uuid]
+			if thread == nil {
+				continue
+			}
+			spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
+			threadDir := filepath.Join(spaceDir, "threads", sanitizeFilename(threadSlug(thread)))
+			if err := writeThreadMarkdown(threadDir, thread); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -148,9 +172,5 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 
 // threadDir returns the output directory for a thread.
 func (e *MarkdownExporter) threadDir(thread *models.Thread) string {
-	slug := thread.Slug
-	if slug == "" {
-		slug = thread.UUID
-	}
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(slug))
+	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
 }

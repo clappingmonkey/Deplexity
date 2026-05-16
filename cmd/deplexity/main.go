@@ -345,7 +345,7 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 			}
 		}
 		if len(spaces) > 0 {
-			if err := exp.ExportSpaces(spaces); err != nil {
+			if err := exp.ExportSpaces(spaces, threads); err != nil {
 				return err
 			}
 		}
@@ -363,7 +363,7 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 			}
 		}
 		if len(spaces) > 0 {
-			if err := exp.ExportSpaces(spaces); err != nil {
+			if err := exp.ExportSpaces(spaces, threads); err != nil {
 				return err
 			}
 		}
@@ -378,6 +378,11 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 		defer exp.Close()
 		for i := range threads {
 			if err := exp.ExportThread(&threads[i]); err != nil {
+				return err
+			}
+		}
+		if len(spaces) > 0 {
+			if err := exp.ExportSpaces(spaces, threads); err != nil {
 				return err
 			}
 		}

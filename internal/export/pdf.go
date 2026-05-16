@@ -29,6 +29,32 @@ func (e *PDFExporter) Close() {}
 // ExportThread generates a PDF for a single thread.
 func (e *PDFExporter) ExportThread(thread *models.Thread) error {
 	dir := e.threadDir(thread)
+	return writeThreadPDF(dir, thread)
+}
+
+// ExportSpaces generates PDFs for threads within each space folder.
+func (e *PDFExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
+	threadByUUID := make(map[string]*models.Thread, len(threads))
+	for i := range threads {
+		threadByUUID[threads[i].UUID] = &threads[i]
+	}
+	for _, space := range spaces {
+		for _, uuid := range space.ThreadUUIDs {
+			thread := threadByUUID[uuid]
+			if thread == nil {
+				continue
+			}
+			dir := filepath.Join(e.OutputDir, "spaces", sanitizeFilename(space.Name), "threads", sanitizeFilename(threadSlug(thread)))
+			if err := writeThreadPDF(dir, thread); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// writeThreadPDF generates a PDF for a thread into the given directory.
+func writeThreadPDF(dir string, thread *models.Thread) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create thread directory: %w", err)
 	}
@@ -177,9 +203,5 @@ func (e *PDFExporter) ExportThread(thread *models.Thread) error {
 
 // threadDir returns the output directory for a thread.
 func (e *PDFExporter) threadDir(thread *models.Thread) string {
-	slug := thread.Slug
-	if slug == "" {
-		slug = thread.UUID
-	}
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(slug))
+	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
 }
