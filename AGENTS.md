@@ -92,7 +92,9 @@ Use `--refresh` to force re-fetching the thread index.
 - Cloudflare blocks HTML page fetching even with valid cookies, but `/rest/` API endpoints work fine.
 - `deplexity login` must be run before `export` — there is no inline auth flow. Alternatively, use `deplexity login --cookie <TOKEN>` for headless/server environments.
 - Raw `Cookie` header is used instead of `http.CookieJar`/`AddCookie` to avoid Go's cookie domain validation issues.
-- Signal handling: first Ctrl+C cancels the context (graceful stop after current operation), second Ctrl+C restores default behavior and force-exits. Implemented via `signal.NotifyContext` + goroutine that calls `cancel()` to restore defaults.
+- Signal handling: first Ctrl+C cancels the context (graceful stop after current operation), second Ctrl+C force-exits via default OS handler. Implemented via `signal.NotifyContext` + dedicated `signal.Notify` channel (avoids spurious message on normal exit).
+- PDF sources rendered as numbered list `"N. Title (domain)"` — avoids gpdf hang on long unbreakable URLs (S3 pre-signed URLs up to 1600 chars). Previous table layout caused infinite loops in gpdf's word-wrap.
+- Multi-threaded PDF export: `--pdf-workers` flag (default: `runtime.NumCPU()`). Each worker creates its own `gpdf.Document` so no locking needed.
 
 ## Bazel
 

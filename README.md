@@ -12,7 +12,7 @@ Perplexity AI has no official data export feature. Your research threads, curate
 
 - **Full ownership** of your data in open formats
 - **Offline archives** you can search, version-control, or feed into other tools
-- **PDF reports** with source tables — no browser or LaTeX needed
+- **PDF reports** with source attribution — no browser or LaTeX needed
 - **Incremental backups** — resumable exports pick up where they left off
 
 ---
@@ -101,6 +101,9 @@ deplexity export --no-spaces --no-profile
 
 # Adjust rate limiting (milliseconds between requests)
 deplexity export --delay 1000
+
+# Control PDF parallelism (default: auto-detect CPU count)
+deplexity export -f pdf --pdf-workers 4
 ```
 
 ### Resumable Exports
