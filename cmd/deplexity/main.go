@@ -120,6 +120,19 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 			spaces = nil
 		} else {
 			fmt.Printf(" %d spaces found\n", len(spaces))
+
+			// Attach thread UUIDs to spaces from the thread index.
+			if len(threadRefs) > 0 {
+				spaceThreads := make(map[string][]string)
+				for _, ref := range threadRefs {
+					if ref.SpaceUUID != "" {
+						spaceThreads[ref.SpaceUUID] = append(spaceThreads[ref.SpaceUUID], ref.UUID)
+					}
+				}
+				for i := range spaces {
+					spaces[i].ThreadUUIDs = spaceThreads[spaces[i].UUID]
+				}
+			}
 		}
 	}
 

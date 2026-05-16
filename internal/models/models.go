@@ -50,7 +50,7 @@ type Space struct {
 	Emoji        string    `json:"emoji,omitempty"`
 	Description  string    `json:"description,omitempty"`
 	Instructions string    `json:"instructions,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	ThreadUUIDs  []string  `json:"thread_uuids,omitempty"`
 }
