@@ -75,6 +75,8 @@ type ExportCmd struct {
 }
 
 func (cmd *ExportCmd) Run(ctx context.Context) error {
+	startTime := time.Now()
+
 	session, err := auth.LoadSession()
 	if err != nil {
 		return err
@@ -176,7 +178,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Printf("\nExport complete: %s\n", cmd.Output)
+	fmt.Printf("\nExport complete: %s (%s)\n", cmd.Output, time.Since(startTime).Round(time.Second))
 	return nil
 }
 
@@ -334,7 +336,9 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 	return threads, nil
 }
 
-func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []models.Thread, spaces []models.Space, user *models.User) error {
+func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads []models.Thread, spaces []models.Space, user *models.User) error {
+	total := len(threads)
+
 	switch format {
 	case "json":
 		exp := &export.JSONExporter{OutputDir: cmd.Output}
@@ -343,9 +347,10 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 			if err := exp.ExportThreadIndex(threads); err != nil {
 				return err
 			}
+			fmt.Printf("  JSON: %d threads indexed\n", total)
 		}
 		if len(spaces) > 0 {
-			if err := exp.ExportSpaces(spaces, threads); err != nil {
+			if err := exp.ExportSpaces(ctx, spaces, threads); err != nil {
 				return err
 			}
 		}
@@ -358,12 +363,26 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 	case "markdown":
 		exp := &export.MarkdownExporter{OutputDir: cmd.Output}
 		for i := range threads {
+			select {
+			case <-ctx.Done():
+				fmt.Printf("\n  Cancelling...\n")
+				return ctx.Err()
+			default:
+			}
+			if cmd.verbose {
+				fmt.Printf("  Markdown: [%d/%d] %s\n", i+1, total, threads[i].Title)
+			} else {
+				fmt.Printf("\r  Markdown: %d/%d threads", i+1, total)
+			}
 			if err := exp.ExportThread(&threads[i]); err != nil {
 				return err
 			}
 		}
+		if total > 0 {
+			fmt.Println()
+		}
 		if len(spaces) > 0 {
-			if err := exp.ExportSpaces(spaces, threads); err != nil {
+			if err := exp.ExportSpaces(ctx, spaces, threads); err != nil {
 				return err
 			}
 		}
@@ -377,12 +396,26 @@ func (cmd *ExportCmd) exportFormat(_ context.Context, format string, threads []m
 		exp := export.NewPDFExporter(cmd.Output)
 		defer exp.Close()
 		for i := range threads {
+			select {
+			case <-ctx.Done():
+				fmt.Printf("\n  Cancelling...\n")
+				return ctx.Err()
+			default:
+			}
+			if cmd.verbose {
+				fmt.Printf("  PDF: [%d/%d] %s\n", i+1, total, threads[i].Title)
+			} else {
+				fmt.Printf("\r  PDF: %d/%d threads", i+1, total)
+			}
 			if err := exp.ExportThread(&threads[i]); err != nil {
 				return err
 			}
 		}
+		if total > 0 {
+			fmt.Println()
+		}
 		if len(spaces) > 0 {
-			if err := exp.ExportSpaces(spaces, threads); err != nil {
+			if err := exp.ExportSpaces(ctx, spaces, threads); err != nil {
 				return err
 			}
 		}
@@ -446,6 +479,13 @@ func (cmd *VersionCmd) Run(_ context.Context) error {
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	// Restore default signal handling after first Ctrl+C so a second one force-exits.
+	go func() {
+		<-ctx.Done()
+		fmt.Fprintf(os.Stderr, "\nInterrupted, finishing current operation... (Ctrl+C again to force quit)\n")
+		cancel()
+	}()
 
 	var cli CLI
 	kctx := kong.Parse(&cli,

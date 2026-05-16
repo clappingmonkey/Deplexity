@@ -1,6 +1,7 @@
 package export
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,13 +34,18 @@ func (e *PDFExporter) ExportThread(thread *models.Thread) error {
 }
 
 // ExportSpaces generates PDFs for threads within each space folder.
-func (e *PDFExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
+func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, threads []models.Thread) error {
 	threadByUUID := make(map[string]*models.Thread, len(threads))
 	for i := range threads {
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
 	for _, space := range spaces {
 		for _, uuid := range space.ThreadUUIDs {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			thread := threadByUUID[uuid]
 			if thread == nil {
 				continue

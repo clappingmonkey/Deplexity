@@ -1,6 +1,7 @@
 package export
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,7 +93,7 @@ func writeThreadMarkdown(dir string, thread *models.Thread) error {
 }
 
 // ExportSpaces writes a summary Markdown file for all spaces and copies thread markdown into each space folder.
-func (e *MarkdownExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
+func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Space, threads []models.Thread) error {
 	dir := filepath.Join(e.OutputDir, "spaces")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create spaces directory: %w", err)
@@ -131,6 +132,11 @@ func (e *MarkdownExporter) ExportSpaces(spaces []models.Space, threads []models.
 	}
 	for _, space := range spaces {
 		for _, uuid := range space.ThreadUUIDs {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			thread := threadByUUID[uuid]
 			if thread == nil {
 				continue

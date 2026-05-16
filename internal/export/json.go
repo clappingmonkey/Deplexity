@@ -1,6 +1,7 @@
 package export
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -125,7 +126,7 @@ func (e *JSONExporter) ExportThreadIndex(threads []models.Thread) error {
 }
 
 // ExportSpaces writes the spaces/collections data and copies thread files into each space folder.
-func (e *JSONExporter) ExportSpaces(spaces []models.Space, threads []models.Thread) error {
+func (e *JSONExporter) ExportSpaces(ctx context.Context, spaces []models.Space, threads []models.Thread) error {
 	dir := filepath.Join(e.OutputDir, "spaces")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create spaces directory: %w", err)
@@ -152,6 +153,11 @@ func (e *JSONExporter) ExportSpaces(spaces []models.Space, threads []models.Thre
 
 		// Copy thread JSON files into the space folder.
 		for _, uuid := range space.ThreadUUIDs {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			thread := threadByUUID[uuid]
 			if thread == nil {
 				continue
