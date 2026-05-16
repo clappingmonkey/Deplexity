@@ -40,7 +40,8 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 - `internal/client/client.go` — authenticated `net/http` client with raw `Cookie` header, adaptive rate limiting, separate HTTP (429/5xx) and network (DNS/dial/TLS) retry loops. All methods accept `context.Context`.
 - `internal/client/transport.go` — Chrome TLS fingerprint via `refraction-networking/utls` to bypass Cloudflare.
 - `internal/client/ratelimit.go` — `RetryWithBackoff`, `computeBackoff`, shared retry constants.
-- `internal/export/` — JSON, Markdown, and PDF exporters. PDF uses `gpdf` (pure Go, zero dependencies). JSON exporter handles `thread_index.json` persistence for resumable exports.
+- `internal/export/` — JSON, Markdown, and PDF exporters. PDF uses `gpdf` (pure Go, zero dependencies). JSON exporter handles `thread_index.json` persistence for resumable exports. All exporters copy thread files into space folders for self-contained output.
+- `internal/export/util.go` — shared helpers: `sanitizeFilename`, `threadSlug`.
 - CLI framework: `alecthomas/kong` (struct-tag based). Commands defined as types with `Run(ctx context.Context) error` methods in `main.go`.
 
 ## Browser Dependency
@@ -79,7 +80,7 @@ Answer content is in `entries[].blocks[]` where `intended_usage == "ask_text_0_m
 
 1. **Phase 1 — Index**: `POST /rest/thread/list_ask_threads` with pagination (limit=20, ascending=false). Dual stop condition: `len(response) < limit` (primary) + all-duplicates (safety net). Result cached in `thread_index.json` with `Complete: true` flag.
 2. **Phase 2 — Details**: `GET /rest/thread/{uuid}` for each thread. Skips threads already fetched on disk. Adaptive rate limiting: delay doubles after 429, halves after 20 consecutive successes.
-3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF and write `manifest.json`.
+3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF. Write threads to `threads/<slug>/` (canonical flat list). Copy thread files into `spaces/<name>/threads/<slug>/` so each space folder is self-contained.
 
 Use `--refresh` to force re-fetching the thread index.
 

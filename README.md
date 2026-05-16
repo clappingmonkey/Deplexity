@@ -121,13 +121,25 @@ deplexity-export/
 ├── profile/
 │   └── user.json
 ├── spaces/
-│   └── <space-slug>/
-│       └── space.json
-└── threads/
-    └── <thread-uuid>/
-        ├── thread.json        # Full thread with entries + sources
-        └── thread.md          # Human-readable Markdown
+│   ├── index.json
+│   ├── spaces.md
+│   └── <space-name>/
+│       ├── space.json
+│       └── threads/           # Self-contained copies of this space's threads
+│           └── <thread-slug>/
+│               ├── thread.json
+│               ├── thread.md
+│               ├── thread.pdf
+│               └── sources.json
+└── threads/                   # Canonical flat list of all threads
+    └── <thread-slug>/
+        ├── thread.json
+        ├── thread.md
+        ├── thread.pdf
+        └── sources.json
 ```
+
+Each space folder is self-contained — you can ZIP and share a single space without needing the top-level `threads/` directory.
 
 ---
 
