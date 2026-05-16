@@ -167,7 +167,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-// fetchThreadIndex loads or fetches the thread UUID list.
+// fetchThreadIndex loads or fetches the thread UUID list (resumable).
 func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter) ([]models.ThreadRef, error) {
 	// Check cache
 	if !cmd.Refresh {
@@ -175,32 +175,93 @@ func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, c *client.Client, js
 		if err != nil {
 			return nil, err
 		}
-		if index != nil && time.Since(index.FetchedAt) < 24*time.Hour {
+		if index != nil && index.Complete && time.Since(index.FetchedAt) < 24*time.Hour {
 			fmt.Printf("Using cached thread list (%d threads, fetched %s ago)\n", index.Total, time.Since(index.FetchedAt).Round(time.Minute))
 			return index.Threads, nil
 		}
+		// Resume from incomplete index
+		if index != nil && !index.Complete && index.Total > 0 {
+			fmt.Printf("Resuming thread list from %d...", index.Total)
+			return cmd.continueListThreads(ctx, c, jsonExp, index)
+		}
 	}
 
-	// Fetch from API
+	// Fresh fetch
+	return cmd.freshListThreads(ctx, c, jsonExp)
+}
+
+// freshListThreads fetches all threads from scratch, saving periodically.
+func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter) ([]models.ThreadRef, error) {
 	fmt.Print("Fetching thread list...")
+
+	index := &models.ThreadIndex{Complete: false}
+
 	threads, err := api.ListThreads(ctx, c, func(n int) {
 		fmt.Printf("\rFetching thread list... %d", n)
 	})
+
+	// Always save progress (even on error/interrupt)
+	refs := buildRefsFromThreads(threads)
+	index.Threads = refs
+	index.Total = len(refs)
 	if err != nil {
+		_ = jsonExp.SaveThreadIndex(index)
 		return nil, err
 	}
+
 	fmt.Printf("\rFetching thread list... %d threads found\n", len(threads))
 
-	// Save to disk
-	if err := jsonExp.SaveThreadIndex(threads); err != nil {
+	index.FetchedAt = time.Now().UTC()
+	index.Complete = true
+	if err := jsonExp.SaveThreadIndex(index); err != nil {
 		return nil, err
 	}
 
+	return refs, nil
+}
+
+// continueListThreads resumes listing from a partial index.
+func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter, index *models.ThreadIndex) ([]models.ThreadRef, error) {
+	startOffset := index.Total
+
+	// Build seen set from existing threads to detect duplicates/recycling.
+	seenUUIDs := make(map[string]bool, len(index.Threads))
+	for _, ref := range index.Threads {
+		seenUUIDs[ref.UUID] = true
+	}
+
+	additional, err := api.ListThreadsFrom(ctx, c, startOffset, seenUUIDs, func(n int) {
+		fmt.Printf("\rResuming thread list... %d", n)
+	})
+
+	// Merge results
+	for _, t := range additional {
+		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title})
+	}
+	index.Total = len(index.Threads)
+
+	if err != nil {
+		_ = jsonExp.SaveThreadIndex(index)
+		return nil, err
+	}
+
+	fmt.Printf("\rFetching thread list... %d threads found\n", len(index.Threads))
+
+	index.FetchedAt = time.Now().UTC()
+	index.Complete = true
+	if err := jsonExp.SaveThreadIndex(index); err != nil {
+		return nil, err
+	}
+
+	return index.Threads, nil
+}
+
+func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	refs := make([]models.ThreadRef, 0, len(threads))
 	for _, t := range threads {
 		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title})
 	}
-	return refs, nil
+	return refs
 }
 
 // fetchThreadDetails fetches full details for threads not yet on disk.

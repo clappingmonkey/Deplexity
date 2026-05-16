@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -16,22 +15,10 @@ type JSONExporter struct {
 }
 
 // SaveThreadIndex persists the lightweight thread UUID list for resumable export.
-func (e *JSONExporter) SaveThreadIndex(threads []models.Thread) error {
+func (e *JSONExporter) SaveThreadIndex(index *models.ThreadIndex) error {
 	if err := os.MkdirAll(e.OutputDir, 0755); err != nil {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
-
-	refs := make([]models.ThreadRef, 0, len(threads))
-	for _, t := range threads {
-		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title})
-	}
-
-	index := models.ThreadIndex{
-		Threads:   refs,
-		Total:     len(refs),
-		FetchedAt: time.Now().UTC(),
-	}
-
 	return writeJSON(filepath.Join(e.OutputDir, "thread_index.json"), index)
 }
 

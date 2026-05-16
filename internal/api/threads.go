@@ -11,11 +11,12 @@ import (
 
 const apiVersion = "2.18"
 
-// ListThreads fetches all user threads, paginating through list_recent.
-// If onProgress is non-nil, it is called after each page with the total count so far.
-func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
+// ListThreadsFrom fetches threads starting at a given offset, calling onProgress after each page.
+// Returns all threads from offset onwards. Stops when the API returns no new (unseen) threads,
+// which handles the Perplexity API quirk of recycling results past the real data.
+func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, seenUUIDs map[string]bool, onProgress func(int)) ([]models.Thread, error) {
 	var allThreads []models.Thread
-	offset := 0
+	offset := startOffset
 	limit := 20 // API caps at 20 per page regardless of requested limit
 
 	for {
@@ -28,14 +29,20 @@ func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([
 		var raw ThreadListResponse
 		path := fmt.Sprintf("/rest/thread/list_recent?exclude_asi=false&version=%s&source=default&limit=%d&offset=%d", apiVersion, limit, offset)
 		if err := c.Get(ctx, path, &raw); err != nil {
-			return nil, fmt.Errorf("failed to list threads: %w", err)
+			return allThreads, fmt.Errorf("failed to list threads: %w", err)
 		}
 
 		if len(raw) == 0 {
 			break
 		}
 
+		newCount := 0
 		for _, t := range raw {
+			if seenUUIDs[t.UUID] {
+				continue
+			}
+			seenUUIDs[t.UUID] = true
+			newCount++
 			allThreads = append(allThreads, models.Thread{
 				UUID:       t.UUID,
 				Title:      t.Title,
@@ -45,10 +52,14 @@ func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([
 		}
 
 		if onProgress != nil {
-			onProgress(len(allThreads))
+			onProgress(startOffset + len(allThreads))
 		}
 
-		// If we got fewer than limit, we've reached the end.
+		// If no new threads were found, the API is recycling — we've reached the end.
+		if newCount == 0 {
+			break
+		}
+
 		if len(raw) < limit {
 			break
 		}
@@ -56,6 +67,12 @@ func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([
 	}
 
 	return allThreads, nil
+}
+
+// ListThreads fetches all user threads, paginating through list_recent.
+// If onProgress is non-nil, it is called after each page with the total count so far.
+func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
+	return ListThreadsFrom(ctx, c, 0, make(map[string]bool), onProgress)
 }
 
 // GetThread fetches the full detail of a single thread including all entries.

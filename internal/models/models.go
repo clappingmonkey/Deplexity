@@ -75,6 +75,7 @@ type ThreadIndex struct {
 	Threads   []ThreadRef `json:"threads"`
 	Total     int         `json:"total"`
 	FetchedAt time.Time   `json:"fetched_at"`
+	Complete  bool        `json:"complete"` // false if listing was interrupted
 }
 
 // ThreadRef is a lightweight reference to a thread (UUID + title only).
