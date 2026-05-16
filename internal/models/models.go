@@ -46,6 +46,8 @@ type Source struct {
 type Space struct {
 	UUID         string    `json:"uuid"`
 	Name         string    `json:"name"`
+	Slug         string    `json:"slug,omitempty"`
+	Emoji        string    `json:"emoji,omitempty"`
 	Description  string    `json:"description,omitempty"`
 	Instructions string    `json:"instructions,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -80,8 +82,9 @@ type ThreadIndex struct {
 
 // ThreadRef is a lightweight reference to a thread (UUID + title only).
 type ThreadRef struct {
-	UUID  string `json:"uuid"`
-	Title string `json:"title"`
+	UUID      string `json:"uuid"`
+	Title     string `json:"title"`
+	SpaceUUID string `json:"space_uuid,omitempty"`
 }
 
 // SavedSession represents the persisted authentication session.

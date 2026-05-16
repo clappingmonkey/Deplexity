@@ -3,23 +3,69 @@ package api
 // These types represent the raw API response shapes from Perplexity's internal API.
 // Reverse-engineered from live API responses (May 2026, API version 2.18).
 
-// --- Thread List: GET /rest/thread/list_recent ---
+// --- Thread List: POST /rest/thread/list_ask_threads ---
 
-// ThreadListResponse is the shape of GET /rest/thread/list_recent.
+// ThreadListResponse is the shape of POST /rest/thread/list_ask_threads.
 type ThreadListResponse []ThreadListItem
 
-// ThreadListItem is a thread summary in the list_recent response.
+// ThreadListItem is a thread summary in the list_ask_threads response.
 type ThreadListItem struct {
-	UUID            string  `json:"uuid"`
-	Title           string  `json:"title"`
-	Link            string  `json:"link"`
-	Variant         string  `json:"variant"`
-	Unread          bool    `json:"unread"`
-	Status          string  `json:"status"`
-	ContextUUID     string  `json:"context_uuid"`
-	TaskDescription *string `json:"task_description"`
-	AnswerPreview   *string `json:"answer_preview"`
-	ModeType        int     `json:"mode_type"`
+	UUID             string              `json:"uuid"`
+	Title            string              `json:"title"`
+	Slug             string              `json:"slug"`
+	ThreadNumber     int                 `json:"thread_number"`
+	Mode             string              `json:"mode"`
+	Status           string              `json:"status"`
+	ContextUUID      string              `json:"context_uuid"`
+	DisplayModel     string              `json:"display_model"`
+	SearchFocus      string              `json:"search_focus"`
+	QueryStr         string              `json:"query_str"`
+	AnswerPreview    string              `json:"answer_preview"`
+	LastQueryTime    string              `json:"last_query_datetime"`
+	HasNextPage      bool                `json:"has_next_page"`
+	TotalThreads     int                 `json:"total_threads"`
+	Collection       *ThreadCollection   `json:"collection,omitempty"`
+	Source           string              `json:"source"`
+	QueryCount       int                 `json:"query_count"`
+}
+
+// ThreadCollection is the inline collection/space info returned with each thread.
+type ThreadCollection struct {
+	UUID  string `json:"uuid"`
+	Title string `json:"title"`
+	Emoji string `json:"emoji"`
+	Slug  string `json:"slug"`
+}
+
+// ThreadListRequest is the POST body for list_ask_threads.
+type ThreadListRequest struct {
+	Limit         int    `json:"limit"`
+	Ascending     bool   `json:"ascending"`
+	Offset        int    `json:"offset"`
+	SearchTerm    string `json:"search_term"`
+	ExcludeASI    bool   `json:"exclude_asi"`
+	IncludeAssets bool   `json:"include_assets"`
+}
+
+// --- Spaces: GET /rest/spaces ---
+
+// SpacesResponse is the shape of GET /rest/spaces.
+type SpacesResponse struct {
+	InvitedSpaces      []SpaceItem `json:"invited_spaces"`
+	PrivateSpaces      []SpaceItem `json:"private_spaces"`
+	SharedSpaces       []SpaceItem `json:"shared_spaces"`
+	SavedSpaces        []SpaceItem `json:"saved_spaces"`
+	OrganizationSpaces []SpaceItem `json:"organization_spaces"`
+}
+
+// SpaceItem is a space/collection in the spaces response.
+type SpaceItem struct {
+	UUID        string `json:"uuid"`
+	Title       string `json:"title"`
+	Slug        string `json:"slug"`
+	Emoji       string `json:"emoji"`
+	Updated     string `json:"updated"`
+	HasNextPage bool   `json:"has_next_page"`
 }
 
 // --- Thread Detail: GET /rest/thread/{uuid} ---

@@ -55,11 +55,10 @@ func TestParseTime(t *testing.T) {
 
 func TestThreadListItemMapping(t *testing.T) {
 	raw := ThreadListItem{
-		UUID:    "abc-123",
-		Title:   "Test Thread",
-		Link:    "/search/abc-123",
-		Variant: "thread",
-		Status:  "completed",
+		UUID:   "abc-123",
+		Title:  "Test Thread",
+		Slug:   "abc-123",
+		Status: "completed",
 	}
 
 	if raw.UUID != "abc-123" {

@@ -11,13 +11,15 @@ import (
 
 const apiVersion = "2.18"
 
-// ListThreadsFrom fetches threads starting at a given offset, calling onProgress after each page.
-// Returns all threads from offset onwards. Stops when the API returns no new (unseen) threads,
-// which handles the Perplexity API quirk of recycling results past the real data.
+// ListThreadsFrom fetches threads starting at a given offset via POST /rest/thread/list_ask_threads.
+// Stops when a page returns fewer than limit results (end of data) or when all results are
+// duplicates (safety net for API recycling behavior).
 func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, seenUUIDs map[string]bool, onProgress func(int)) ([]models.Thread, error) {
 	var allThreads []models.Thread
 	offset := startOffset
-	limit := 20 // API caps at 20 per page regardless of requested limit
+	limit := 20
+
+	path := fmt.Sprintf("/rest/thread/list_ask_threads?version=%s&source=default", apiVersion)
 
 	for {
 		select {
@@ -26,9 +28,17 @@ func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, see
 		default:
 		}
 
+		reqBody := ThreadListRequest{
+			Limit:         limit,
+			Ascending:     false,
+			Offset:        offset,
+			SearchTerm:    "",
+			ExcludeASI:    false,
+			IncludeAssets: true,
+		}
+
 		var raw ThreadListResponse
-		path := fmt.Sprintf("/rest/thread/list_recent?exclude_asi=false&version=%s&source=default&limit=%d&offset=%d", apiVersion, limit, offset)
-		if err := c.Get(ctx, path, &raw); err != nil {
+		if err := c.Post(ctx, path, reqBody, &raw); err != nil {
 			return allThreads, fmt.Errorf("failed to list threads: %w", err)
 		}
 
@@ -43,33 +53,42 @@ func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, see
 			}
 			seenUUIDs[t.UUID] = true
 			newCount++
-			allThreads = append(allThreads, models.Thread{
-				UUID:       t.UUID,
-				Title:      t.Title,
-				Slug:       t.UUID,
-				Bookmarked: false,
-			})
+
+			thread := models.Thread{
+				UUID:  t.UUID,
+				Title: t.Title,
+				Slug:  t.Slug,
+			}
+			if t.Collection != nil {
+				thread.SpaceUUID = t.Collection.UUID
+			}
+			if t.LastQueryTime != "" {
+				thread.UpdatedAt = parseTime(t.LastQueryTime)
+			}
+			allThreads = append(allThreads, thread)
 		}
 
 		if onProgress != nil {
 			onProgress(startOffset + len(allThreads))
 		}
 
-		// If no new threads were found, the API is recycling — we've reached the end.
+		// If no new threads were found, the API is recycling — stop.
 		if newCount == 0 {
 			break
 		}
 
+		// If we got fewer than limit, we've reached the last page.
 		if len(raw) < limit {
 			break
 		}
+
 		offset += len(raw)
 	}
 
 	return allThreads, nil
 }
 
-// ListThreads fetches all user threads, paginating through list_recent.
+// ListThreads fetches all user threads via POST /rest/thread/list_ask_threads.
 // If onProgress is non-nil, it is called after each page with the total count so far.
 func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
 	return ListThreadsFrom(ctx, c, 0, make(map[string]bool), onProgress)

@@ -278,6 +278,111 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	}
 }
 
+// Post performs an authenticated POST request with a JSON body and decodes the response into dest.
+func (c *Client) Post(ctx context.Context, path string, body interface{}, dest interface{}) error {
+	fullURL := c.baseURL + path
+
+	httpAttempt := 0
+	netAttempt := 0
+
+	for {
+		if httpAttempt > maxRetries {
+			return fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
+		}
+		if netAttempt > maxNetworkRetries {
+			return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
+		}
+
+		c.rateLimit()
+
+		var bodyReader io.Reader
+		if body != nil {
+			bodyBytes, err := json.Marshal(body)
+			if err != nil {
+				return fmt.Errorf("could not marshal request body for %s: %w", path, err)
+			}
+			bodyReader = strings.NewReader(string(bodyBytes))
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bodyReader)
+		if err != nil {
+			return fmt.Errorf("could not create request for %s: %w", path, err)
+		}
+
+		c.setHeaders(req)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			netAttempt++
+			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
+			if c.verbose {
+				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		netAttempt = 0
+
+		if c.verbose {
+			log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusTooManyRequests {
+				c.onRateLimited()
+			}
+			httpAttempt++
+			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
+			if c.verbose {
+				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("%w (HTTP %d)", ErrNotAuthenticated, resp.StatusCode)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("unexpected response from %s: HTTP %d — %s", path, resp.StatusCode, string(respBody))
+		}
+
+		c.onSuccess()
+		httpAttempt = 0
+
+		if dest != nil {
+			if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+				return fmt.Errorf("could not decode response from %s: %w", path, err)
+			}
+		}
+
+		return nil
+	}
+}
+
 // setHeaders adds the required headers and cookies to mimic a real browser request.
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)

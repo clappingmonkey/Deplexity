@@ -236,7 +236,7 @@ func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client,
 
 	// Merge results
 	for _, t := range additional {
-		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title})
+		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID})
 	}
 	index.Total = len(index.Threads)
 
@@ -259,7 +259,7 @@ func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client,
 func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	refs := make([]models.ThreadRef, 0, len(threads))
 	for _, t := range threads {
-		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title})
+		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID})
 	}
 	return refs
 }
