@@ -92,6 +92,7 @@ Use `--refresh` to force re-fetching the thread index.
 - Cloudflare blocks HTML page fetching even with valid cookies, but `/rest/` API endpoints work fine.
 - `deplexity login` must be run before `export` — there is no inline auth flow. Alternatively, use `deplexity login --cookie <TOKEN>` for headless/server environments.
 - Raw `Cookie` header is used instead of `http.CookieJar`/`AddCookie` to avoid Go's cookie domain validation issues.
+- Signal handling: first Ctrl+C cancels the context (graceful stop after current operation), second Ctrl+C restores default behavior and force-exits. Implemented via `signal.NotifyContext` + goroutine that calls `cancel()` to restore defaults.
 
 ## Bazel
 

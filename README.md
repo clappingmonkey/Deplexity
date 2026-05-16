@@ -204,7 +204,7 @@ internal/
 
 Key design decisions:
 - **Pure Go** — Single static binary, no CGO, no external tools
-- **Context propagation** — All operations are cancellable (Ctrl+C works instantly)
+- **Context propagation** — All operations are cancellable (first Ctrl+C cancels gracefully, second force-quits)
 - **Layered architecture** — API types are separate from domain models; exporters are independent
 - **Cloudflare bypass** — Chrome TLS fingerprint via `refraction-networking/utls`
 - **Adaptive rate limiting** — Delay doubles after 429s, halves after sustained success
