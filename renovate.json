@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":automergeMinor",
+    ":automergePatch"
+  ],
+  "bazel-module": {
+    "enabled": true
+  },
+  "postUpdateOptions": ["gomodTidy"],
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "reviewers": ["clappingmonkey"],
+      "labels": ["major", "dependencies"]
+    },
+    {
+      "matchUpdateTypes": ["minor"],
+      "labels": ["minor", "dependencies", "automerge"]
+    },
+    {
+      "matchUpdateTypes": ["patch"],
+      "labels": ["patch", "dependencies", "automerge"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["github-actions"]
+    },
+    {
+      "matchManagers": ["gomod"],
+      "addLabels": ["go"]
+    },
+    {
+      "matchManagers": ["bazel-module"],
+      "addLabels": ["bazel"]
+    }
+  ],
+  "schedule": ["at any time"]
+}
