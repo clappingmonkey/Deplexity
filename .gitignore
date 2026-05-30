@@ -44,3 +44,6 @@ session.json
 
 # Export output (don't commit exported data)
 deplexity-export/
+
+# Personal TODO
+TODO.md
