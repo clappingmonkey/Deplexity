@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/clappingmonkey/Deplexity/compare/v0.2.0...v0.2.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **ci:** add platforms dep to MODULE.bazel for cross-compilation ([8a8068e](https://github.com/clappingmonkey/Deplexity/commit/8a8068e2fc82c6e2fbbeefac70925ea5a217c6e0))
+
 ## [0.2.0](https://github.com/clappingmonkey/Deplexity/compare/v0.1.0...v0.2.0) (2026-05-30)
 
 
