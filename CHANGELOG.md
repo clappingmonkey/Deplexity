@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/clappingmonkey/Deplexity/compare/v0.2.1...v0.2.2) (2026-05-30)
+
+
+### Bug Fixes
+
+* **ci:** add --repo flag to gh commands in auto-approve workflow ([217db79](https://github.com/clappingmonkey/Deplexity/commit/217db799d0c1f15492fd748d1d560c19c81a4c75))
+* **ci:** add RENOVATE_REPOSITORIES to renovate workflow ([50f0792](https://github.com/clappingmonkey/Deplexity/commit/50f07920fd8c3e122fcb71c60c434a0255be76f7))
+* **ci:** allow bazel lockfile updates and add repo labels ([f6cffcd](https://github.com/clappingmonkey/Deplexity/commit/f6cffcd6f8de0f3dc1efe62c9aa5c2c863b955bf))
+* **ci:** use PAT for auto-approve instead of GitHub App token ([fad7414](https://github.com/clappingmonkey/Deplexity/commit/fad74149d6b8aebf2d499b063f18dc4e0807b328))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.11 ([#4](https://github.com/clappingmonkey/Deplexity/issues/4)) ([5be7a0f](https://github.com/clappingmonkey/Deplexity/commit/5be7a0fc8445b61524424f6f404a1fd514e2fadc))
+* **deps:** update module golang.org/x/net to v0.55.0 ([#8](https://github.com/clappingmonkey/Deplexity/issues/8)) ([93e9f2d](https://github.com/clappingmonkey/Deplexity/commit/93e9f2deda1b5ed8ce2df8cef9a34d515b90aae8))
+
 ## [0.2.1](https://github.com/clappingmonkey/Deplexity/compare/v0.2.0...v0.2.1) (2026-05-30)
 
 
