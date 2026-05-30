@@ -8,19 +8,10 @@ jobs:
   approve:
     if: github.actor == 'renovate-boto[bot]' && !contains(github.event.pull_request.labels.*.name, 'major')
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
     steps:
-      - name: Generate approval token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APPROVER_APP_ID }}
-          private-key: ${{ secrets.APPROVER_APP_PRIVATE_KEY }}
-
       - name: Approve PR
         run: |
           gh pr review ${{ github.event.pull_request.number }} --approve --repo ${{ github.repository }}
           gh pr comment ${{ github.event.pull_request.number }} --body "Auto-approved: this is a non-major Renovate update. Will merge once all status checks pass." --repo ${{ github.repository }}
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ secrets.APPROVER_PAT }}
