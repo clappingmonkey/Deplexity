@@ -87,7 +87,7 @@ jobs:
           cp bazel-bin/cmd/deplexity/deplexity_/deplexity${{ matrix.platform.ext }} dist/${{ matrix.platform.output }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.platform.config }}
           path: dist/
@@ -102,7 +102,7 @@ jobs:
       artifact-name: dist-${{ inputs.tag-name }}
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: binary-*
           path: dist
@@ -118,7 +118,7 @@ jobs:
           cat checksums.txt
 
       - name: Upload combined artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist-${{ inputs.tag-name }}
           path: dist/
