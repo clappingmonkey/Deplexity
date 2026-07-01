@@ -7,7 +7,7 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/gpdf-dev/gpdf v1.0.11
 	github.com/refraction-networking/utls v1.8.2
-	github.com/schollz/progressbar/v3 v3.19.0
+	github.com/schollz/progressbar/v3 v3.19.1
 	golang.org/x/net v0.56.0
 )
 
