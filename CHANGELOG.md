@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.3](https://github.com/clappingmonkey/Deplexity/compare/v0.2.2...v0.2.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/schollz/progressbar/v3 to v3.19.1 ([#34](https://github.com/clappingmonkey/Deplexity/issues/34)) ([89d5f46](https://github.com/clappingmonkey/Deplexity/commit/89d5f464445cafb3f1c146c4b21799c390c54db3))
+* **deps:** update module golang.org/x/net to v0.56.0 ([#27](https://github.com/clappingmonkey/Deplexity/issues/27)) ([17d5f79](https://github.com/clappingmonkey/Deplexity/commit/17d5f79696e589fd258e8eb44d2860c0f76ed216))
+
+
+### Documentation
+
+* add terminal demo GIF to README ([#35](https://github.com/clappingmonkey/Deplexity/issues/35)) ([1730e66](https://github.com/clappingmonkey/Deplexity/commit/1730e66ddd358743b978a1b594fff539416c309f))
+* remove "(coming soon)" from releases link ([#36](https://github.com/clappingmonkey/Deplexity/issues/36)) ([63468a0](https://github.com/clappingmonkey/Deplexity/commit/63468a03dc6ee97db3c27d91c9c09af2694bf9f1))
+
 ## [0.2.2](https://github.com/clappingmonkey/Deplexity/compare/v0.2.1...v0.2.2) (2026-05-30)
 
 
