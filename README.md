@@ -38,7 +38,7 @@ bazel build //cmd/deplexity
 
 ### Pre-built binaries
 
-Download from [Releases](https://github.com/clappingmonkey/deplexity/releases) (coming soon).
+Download from [Releases](https://github.com/clappingmonkey/deplexity/releases).
 
 ---
 
