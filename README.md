@@ -4,6 +4,10 @@
 
 Deplexity is a CLI tool that authenticates via your browser session and exports all your Perplexity AI data into portable formats (JSON, Markdown, PDF). Built in pure Go with zero runtime dependencies.
 
+<p align="center">
+  <img src="demo.gif" alt="Deplexity demo — exporting Perplexity threads to JSON, Markdown, and PDF" width="800">
+</p>
+
 ---
 
 ## Why Deplexity?

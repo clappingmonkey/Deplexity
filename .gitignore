@@ -45,5 +45,8 @@ session.json
 # Export output (don't commit exported data)
 deplexity-export/
 
+# VHS tape files (demo recording scripts)
+*.tape
+
 # Personal TODO
 TODO.md
