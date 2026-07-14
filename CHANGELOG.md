@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/clappingmonkey/Deplexity/compare/v0.2.3...v0.2.4) (2026-07-14)
+
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/net to v0.57.0 ([#38](https://github.com/clappingmonkey/Deplexity/issues/38)) ([fe0347b](https://github.com/clappingmonkey/Deplexity/commit/fe0347b2d441a518ff13f499c7760abec66dcc4a))
+
 ## [0.2.3](https://github.com/clappingmonkey/Deplexity/compare/v0.2.2...v0.2.3) (2026-07-02)
 
 
