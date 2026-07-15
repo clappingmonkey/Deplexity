@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/clappingmonkey/Deplexity/compare/v0.2.4...v0.2.5) (2026-07-15)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/alecthomas/kong to v1.16.0 ([#43](https://github.com/clappingmonkey/Deplexity/issues/43)) ([39727cc](https://github.com/clappingmonkey/Deplexity/commit/39727cceafc7d347f205cbc2806604e032e00cc1))
+
 ## [0.2.4](https://github.com/clappingmonkey/Deplexity/compare/v0.2.3...v0.2.4) (2026-07-14)
 
 
