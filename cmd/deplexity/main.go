@@ -318,7 +318,18 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 			default:
 			}
 
-			full, err := api.GetThread(ctx, c, ref.UUID)
+			partial, err := jsonExp.LoadThread(ref.UUID)
+			if err != nil {
+				partial = nil
+			}
+			resume := resumePoint(cmd.Refresh, partial)
+			if resume != nil {
+				fmt.Printf("\n  Resuming thread %s from entry %d\n", ref.UUID, resume.NextOffset)
+			}
+
+			onPage := func(t *models.Thread) error { return jsonExp.ExportThread(t) }
+
+			full, err := api.GetThread(ctx, c, ref.UUID, resume, onPage)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\n  Warning: could not fetch thread %s: %v\n", ref.UUID, err)
 				_ = bar.Add(1)
@@ -347,6 +358,16 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 	}
 
 	return threads, nil
+}
+
+// resumePoint reports the checkpoint an interrupted fetch should continue
+// from, or nil to fetch from the first page. Refresh runs never resume, since
+// entries cached before the thread changed may be stale.
+func resumePoint(refresh bool, partial *models.Thread) *models.Thread {
+	if refresh || partial == nil || partial.Complete || partial.NextOffset <= 0 {
+		return nil
+	}
+	return partial
 }
 
 func needsThreadFetch(refresh bool, ref models.ThreadRef, cached *models.Thread, err error) bool {

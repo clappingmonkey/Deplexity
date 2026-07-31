@@ -39,6 +39,32 @@ func TestNeedsThreadFetch(t *testing.T) {
 	}
 }
 
+func TestResumePoint(t *testing.T) {
+	partial := &models.Thread{NextOffset: 50}
+
+	tests := []struct {
+		name    string
+		refresh bool
+		partial *models.Thread
+		want    bool
+	}{
+		{name: "interrupted fetch", partial: partial, want: true},
+		{name: "refresh discards checkpoint", refresh: true, partial: partial},
+		{name: "no partial on disk"},
+		{name: "already complete", partial: &models.Thread{Complete: true, NextOffset: 50}},
+		{name: "no progress recorded", partial: &models.Thread{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resumePoint(tt.refresh, tt.partial)
+			if (got != nil) != tt.want {
+				t.Errorf("resumePoint() = %v, want non-nil %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAttachPreviousUpdatedAt(t *testing.T) {
 	previous := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	refs := []models.ThreadRef{{UUID: "unchanged"}, {UUID: "new"}}
