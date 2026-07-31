@@ -21,6 +21,7 @@ type Thread struct {
 	SpaceUUID  string    `json:"space_uuid,omitempty"`
 	Entries    []Entry   `json:"entries,omitempty"`
 	Bookmarked bool      `json:"bookmarked,omitempty"`
+	Complete   bool      `json:"complete"`
 }
 
 // Entry represents a single query-response pair within a thread.
@@ -44,15 +45,15 @@ type Source struct {
 
 // Space represents a Perplexity Space (collection).
 type Space struct {
-	UUID         string    `json:"uuid"`
-	Name         string    `json:"name"`
-	Slug         string    `json:"slug,omitempty"`
-	Emoji        string    `json:"emoji,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	Instructions string    `json:"instructions,omitempty"`
+	UUID         string     `json:"uuid"`
+	Name         string     `json:"name"`
+	Slug         string     `json:"slug,omitempty"`
+	Emoji        string     `json:"emoji,omitempty"`
+	Description  string     `json:"description,omitempty"`
+	Instructions string     `json:"instructions,omitempty"`
 	CreatedAt    *time.Time `json:"created_at,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	ThreadUUIDs  []string  `json:"thread_uuids,omitempty"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ThreadUUIDs  []string   `json:"thread_uuids,omitempty"`
 }
 
 // ExportManifest holds metadata about an export run.
@@ -80,11 +81,13 @@ type ThreadIndex struct {
 	Complete  bool        `json:"complete"` // false if listing was interrupted
 }
 
-// ThreadRef is a lightweight reference to a thread (UUID + title only).
+// ThreadRef is a lightweight reference to a thread from the list endpoint.
 type ThreadRef struct {
-	UUID      string `json:"uuid"`
-	Title     string `json:"title"`
-	SpaceUUID string `json:"space_uuid,omitempty"`
+	UUID              string    `json:"uuid"`
+	Title             string    `json:"title"`
+	SpaceUUID         string    `json:"space_uuid,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	PreviousUpdatedAt time.Time `json:"-"`
 }
 
 // SavedSession represents the persisted authentication session.

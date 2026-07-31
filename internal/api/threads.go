@@ -11,6 +11,10 @@ import (
 
 const apiVersion = "2.18"
 
+type getter interface {
+	Get(context.Context, string, any) error
+}
+
 // ListThreadsFrom fetches threads starting at a given offset via POST /rest/thread/list_ask_threads.
 // Stops when a page returns fewer than limit results (end of data) or when all results are
 // duplicates (safety net for API recycling behavior).
@@ -95,7 +99,7 @@ func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([
 }
 
 // GetThread fetches the full detail of a single thread including all entries.
-func GetThread(ctx context.Context, c *client.Client, uuid string) (*models.Thread, error) {
+func GetThread(ctx context.Context, c getter, uuid string) (*models.Thread, error) {
 	var raw ThreadDetailResponse
 	path := fmt.Sprintf("/rest/thread/%s?with_schematized_response=true&version=%s&source=default&limit=50&offset=0&from_first=true&supported_block_use_cases=answer_modes&supported_block_use_cases=preserve_latex", uuid, apiVersion)
 	if err := c.Get(ctx, path, &raw); err != nil {
@@ -163,7 +167,7 @@ func GetThread(ctx context.Context, c *client.Client, uuid string) (*models.Thre
 			var page ThreadDetailResponse
 			pagePath := fmt.Sprintf("/rest/thread/%s?with_schematized_response=true&version=%s&source=default&limit=50&offset=%d&from_first=true&supported_block_use_cases=answer_modes&supported_block_use_cases=preserve_latex", uuid, apiVersion, offset)
 			if err := c.Get(ctx, pagePath, &page); err != nil {
-				break // best effort
+				return nil, fmt.Errorf("failed to get thread %s page at offset %d: %w", uuid, offset, err)
 			}
 			for _, e := range page.Entries {
 				entry := models.Entry{
@@ -208,6 +212,7 @@ func GetThread(ctx context.Context, c *client.Client, uuid string) (*models.Thre
 		}
 	}
 
+	thread.Complete = true
 	return thread, nil
 }
 

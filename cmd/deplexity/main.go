@@ -66,13 +66,13 @@ func (cmd *LoginCmd) Run(ctx context.Context) error {
 
 // ExportCmd handles data export.
 type ExportCmd struct {
-	Output  string   `short:"o" default:"deplexity-export" help:"Output directory."`
-	Format  []string `short:"f" default:"json,markdown" help:"Export formats (json, markdown, pdf)." enum:"json,markdown,pdf"`
-	Threads bool     `help:"Export threads." default:"true" negatable:""`
-	Spaces  bool     `help:"Export spaces/collections." default:"true" negatable:""`
-	Profile bool     `help:"Export user profile." default:"true" negatable:""`
+	Output     string   `short:"o" default:"deplexity-export" help:"Output directory."`
+	Format     []string `short:"f" default:"json,markdown" help:"Export formats (json, markdown, pdf)." enum:"json,markdown,pdf"`
+	Threads    bool     `help:"Export threads." default:"true" negatable:""`
+	Spaces     bool     `help:"Export spaces/collections." default:"true" negatable:""`
+	Profile    bool     `help:"Export user profile." default:"true" negatable:""`
 	Delay      int      `help:"Delay between API requests in milliseconds." default:"500"`
-	Refresh    bool     `help:"Force re-fetch of thread list even if cached." default:"false"`
+	Refresh    bool     `help:"Re-fetch the thread list and updated thread details." default:"false"`
 	PDFWorkers int      `help:"Number of parallel workers for PDF generation (0 = auto-detect CPU count)." default:"0" name:"pdf-workers"`
 
 	verbose bool // set by main before Run
@@ -214,6 +214,11 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 	fmt.Print("Fetching thread list...")
 
 	index := &models.ThreadIndex{Complete: false}
+	previous, err := jsonExp.LoadThreadIndex()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n  Warning: could not read cached thread list: %v\n", err)
+		previous = nil
+	}
 
 	threads, err := api.ListThreads(ctx, c, func(n int) {
 		fmt.Printf("\rFetching thread list... %d", n)
@@ -221,6 +226,9 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 
 	// Always save progress (even on error/interrupt)
 	refs := buildRefsFromThreads(threads)
+	if previous != nil {
+		attachPreviousUpdatedAt(refs, previous.Threads)
+	}
 	index.Threads = refs
 	index.Total = len(refs)
 	if err != nil {
@@ -255,7 +263,7 @@ func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client,
 
 	// Merge results
 	for _, t := range additional {
-		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID})
+		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
 	}
 	index.Total = len(index.Threads)
 
@@ -278,17 +286,18 @@ func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client,
 func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	refs := make([]models.ThreadRef, 0, len(threads))
 	for _, t := range threads {
-		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID})
+		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
 	}
 	return refs
 }
 
-// fetchThreadDetails fetches full details for threads not yet on disk.
+// fetchThreadDetails fetches full details for incomplete or changed threads.
 func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter, refs []models.ThreadRef) ([]models.Thread, error) {
 	// Determine which threads need fetching
 	var missing []models.ThreadRef
 	for _, ref := range refs {
-		if !jsonExp.ThreadDetailExists(ref.UUID) {
+		cached, err := jsonExp.LoadCompleteThread(ref.UUID)
+		if needsThreadFetch(cmd.Refresh, ref, cached, err) {
 			missing = append(missing, ref)
 		}
 	}
@@ -330,7 +339,7 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 	// Load all threads from disk
 	threads := make([]models.Thread, 0, len(refs))
 	for _, ref := range refs {
-		t, err := jsonExp.LoadThread(ref.UUID)
+		t, err := jsonExp.LoadCompleteThread(ref.UUID)
 		if err != nil {
 			continue // skip threads that failed to fetch
 		}
@@ -338,6 +347,23 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 	}
 
 	return threads, nil
+}
+
+func needsThreadFetch(refresh bool, ref models.ThreadRef, cached *models.Thread, err error) bool {
+	if err != nil || cached == nil {
+		return true
+	}
+	return refresh && (ref.UpdatedAt.IsZero() || ref.PreviousUpdatedAt.IsZero() || ref.UpdatedAt.After(ref.PreviousUpdatedAt))
+}
+
+func attachPreviousUpdatedAt(refs []models.ThreadRef, previous []models.ThreadRef) {
+	previousByUUID := make(map[string]time.Time, len(previous))
+	for _, ref := range previous {
+		previousByUUID[ref.UUID] = ref.UpdatedAt
+	}
+	for i := range refs {
+		refs[i].PreviousUpdatedAt = previousByUUID[refs[i].UUID]
+	}
 }
 
 func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads []models.Thread, spaces []models.Space, user *models.User) error {

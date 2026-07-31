@@ -1,9 +1,26 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+type threadGetter struct {
+	responses []ThreadDetailResponse
+	calls     int
+}
+
+func (g *threadGetter) Get(_ context.Context, _ string, dst any) error {
+	if g.calls >= len(g.responses) {
+		return errors.New("rate limited")
+	}
+	*dst.(*ThreadDetailResponse) = g.responses[g.calls]
+	g.calls++
+	return nil
+}
 
 func TestParseTime(t *testing.T) {
 	tests := []struct {
@@ -66,5 +83,24 @@ func TestThreadListItemMapping(t *testing.T) {
 	}
 	if raw.Title != "Test Thread" {
 		t.Errorf("unexpected Title: %s", raw.Title)
+	}
+}
+
+func TestGetThreadReturnsErrorWhenLaterPageFails(t *testing.T) {
+	getter := &threadGetter{responses: []ThreadDetailResponse{{
+		ThreadMetadata: ThreadMetadata{Title: "Long thread"},
+		Entries:        []ThreadEntry{{UUID: "entry-1"}},
+		HasNextPage:    true,
+	}}}
+
+	thread, err := GetThread(context.Background(), getter, "thread-1")
+	if err == nil {
+		t.Fatal("GetThread succeeded after a later page failed")
+	}
+	if thread != nil {
+		t.Fatalf("GetThread returned a partial thread: %+v", thread)
+	}
+	if !strings.Contains(err.Error(), "offset 1") {
+		t.Errorf("error = %q, want offset context", err)
 	}
 }

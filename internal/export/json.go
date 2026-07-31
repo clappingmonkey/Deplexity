@@ -42,11 +42,17 @@ func (e *JSONExporter) LoadThreadIndex() (*models.ThreadIndex, error) {
 	return &index, nil
 }
 
-// ThreadDetailExists checks whether a thread's detail JSON already exists on disk.
-func (e *JSONExporter) ThreadDetailExists(uuid string) bool {
-	path := filepath.Join(e.OutputDir, "threads", sanitizeFilename(uuid), "thread.json")
-	_, err := os.Stat(path)
-	return err == nil
+// LoadCompleteThread reads a thread only when its detail fetch completed.
+// Thread JSON written by earlier versions has no complete field and is retried.
+func (e *JSONExporter) LoadCompleteThread(uuid string) (*models.Thread, error) {
+	thread, err := e.LoadThread(uuid)
+	if err != nil {
+		return nil, err
+	}
+	if !thread.Complete {
+		return nil, fmt.Errorf("thread %s is incomplete", uuid)
+	}
+	return thread, nil
 }
 
 // LoadThread reads a single thread from its JSON file on disk.

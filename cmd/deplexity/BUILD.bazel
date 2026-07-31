@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "deplexity_lib",
@@ -24,4 +24,11 @@ go_binary(
         "main.version": "{STABLE_VERSION}",
         "main.buildTime": "{BUILD_TIMESTAMP}",
     },
+)
+
+go_test(
+    name = "deplexity_test",
+    srcs = ["main_test.go"],
+    embed = [":deplexity_lib"],
+    deps = ["//internal/models"],
 )
