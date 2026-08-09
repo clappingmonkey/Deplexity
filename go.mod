@@ -3,7 +3,7 @@ module github.com/clappingmonkey/deplexity
 go 1.26.3
 
 require (
-	github.com/alecthomas/kong v1.16.0
+	github.com/alecthomas/kong v1.16.1
 	github.com/go-rod/rod v0.116.2
 	github.com/gpdf-dev/gpdf v1.0.11
 	github.com/refraction-networking/utls v1.8.2
