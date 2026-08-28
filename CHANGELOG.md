@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.6](https://github.com/clappingmonkey/Deplexity/compare/v0.2.5...v0.2.6) (2026-08-28)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/alecthomas/kong to v1.16.1 ([#55](https://github.com/clappingmonkey/Deplexity/issues/55)) ([8e02991](https://github.com/clappingmonkey/Deplexity/commit/8e02991bf01d184b99e8992eb2b1ed22e3d2b792))
+* **deps:** update module golang.org/x/net to v0.58.0 ([#58](https://github.com/clappingmonkey/Deplexity/issues/58)) ([ab60bdc](https://github.com/clappingmonkey/Deplexity/commit/ab60bdc600a0361a0aee7f90b6e9ce2413d6bcac))
+* resume incomplete thread exports ([#53](https://github.com/clappingmonkey/Deplexity/issues/53)) ([bd88f26](https://github.com/clappingmonkey/Deplexity/commit/bd88f269ded8437fef203a4b8204f3fdabd0fd43)), closes [#45](https://github.com/clappingmonkey/Deplexity/issues/45)
+
 ## [0.2.5](https://github.com/clappingmonkey/Deplexity/compare/v0.2.4...v0.2.5) (2026-07-15)
 
 
