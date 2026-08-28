@@ -22,6 +22,7 @@ go_library(
 go_test(
     name = "export_test",
     srcs = [
+        "json_test.go",
         "markdown_test.go",
         "util_test.go",
     ],
