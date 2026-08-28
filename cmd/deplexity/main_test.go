@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/clappingmonkey/deplexity/internal/export"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
@@ -75,5 +76,71 @@ func TestAttachPreviousUpdatedAt(t *testing.T) {
 	}
 	if !refs[1].PreviousUpdatedAt.IsZero() {
 		t.Errorf("PreviousUpdatedAt = %v, want zero time", refs[1].PreviousUpdatedAt)
+	}
+}
+
+func TestIndexServableFromCache(t *testing.T) {
+	fresh := time.Now().UTC()
+	stale := fresh.Add(-25 * time.Hour)
+
+	tests := []struct {
+		name  string
+		index *models.ThreadIndex
+		want  bool
+	}{
+		{name: "nil index", index: nil, want: false},
+		{name: "complete with threads", index: &models.ThreadIndex{Complete: true, Total: 3, FetchedAt: fresh}, want: true},
+		{name: "poisoned empty complete index", index: &models.ThreadIndex{Complete: true, Total: 0, FetchedAt: fresh}, want: false},
+		{name: "incomplete index", index: &models.ThreadIndex{Complete: false, Total: 3, FetchedAt: fresh}, want: false},
+		{name: "expired cache", index: &models.ThreadIndex{Complete: true, Total: 3, FetchedAt: stale}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := indexServableFromCache(tt.index); got != tt.want {
+				t.Errorf("indexServableFromCache() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeIndex(t *testing.T) {
+	tests := []struct {
+		name         string
+		total        int
+		wantComplete bool
+	}{
+		{name: "empty result stays incomplete", total: 0, wantComplete: false},
+		{name: "populated result is complete", total: 3, wantComplete: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+			index := &models.ThreadIndex{Total: tt.total}
+
+			if err := finalizeIndex(jsonExp, index); err != nil {
+				t.Fatalf("finalizeIndex: %v", err)
+			}
+			if index.Complete != tt.wantComplete {
+				t.Errorf("Complete = %t, want %t", index.Complete, tt.wantComplete)
+			}
+			if index.FetchedAt.IsZero() {
+				t.Error("FetchedAt not stamped")
+			}
+
+			// The persisted index must round-trip the same completion state, so
+			// an empty result cannot be served from cache on the next run.
+			reloaded, err := jsonExp.LoadThreadIndex()
+			if err != nil {
+				t.Fatalf("LoadThreadIndex: %v", err)
+			}
+			if reloaded == nil {
+				t.Fatal("index was not persisted")
+			}
+			if reloaded.Complete != tt.wantComplete {
+				t.Errorf("persisted Complete = %t, want %t", reloaded.Complete, tt.wantComplete)
+			}
+		})
 	}
 }

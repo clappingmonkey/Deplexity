@@ -30,5 +30,8 @@ go_test(
     name = "deplexity_test",
     srcs = ["main_test.go"],
     embed = [":deplexity_lib"],
-    deps = ["//internal/models"],
+    deps = [
+        "//internal/export",
+        "//internal/models",
+    ],
 )

@@ -98,6 +98,14 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	fmt.Printf("Exporting to: %s\n", cmd.Output)
 	fmt.Printf("Formats: %v\n\n", cmd.Format)
 
+	// Validate the session before any network phase. A half-valid session lets
+	// the list endpoint return an empty result with no error, which would
+	// otherwise be cached as a complete, empty index and suppress later runs.
+	// Failing here surfaces the "run 'deplexity login'" message immediately.
+	if _, err := api.ValidateSession(ctx, c); err != nil {
+		return err
+	}
+
 	// === Phase 1: Thread index (list all UUIDs) ===
 	var threadRefs []models.ThreadRef
 	if cmd.Threads {
@@ -194,7 +202,7 @@ func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, c *client.Client, js
 		if err != nil {
 			return nil, err
 		}
-		if index != nil && index.Complete && time.Since(index.FetchedAt) < 24*time.Hour {
+		if indexServableFromCache(index) {
 			fmt.Printf("Using cached thread list (%d threads, fetched %s ago)\n", index.Total, time.Since(index.FetchedAt).Round(time.Minute))
 			return index.Threads, nil
 		}
@@ -238,13 +246,33 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 
 	fmt.Printf("\rFetching thread list... %d threads found\n", len(threads))
 
-	index.FetchedAt = time.Now().UTC()
-	index.Complete = true
-	if err := jsonExp.SaveThreadIndex(index); err != nil {
+	if err := finalizeIndex(jsonExp, index); err != nil {
 		return nil, err
 	}
 
 	return refs, nil
+}
+
+// indexServableFromCache reports whether a cached thread index can be reused
+// without re-listing. A complete index with zero threads is rejected even
+// though it is marked complete: it is either genuinely empty (cheap to re-list)
+// or a bogus empty index cached by an earlier half-valid session, and serving
+// it would keep an affected user broken for up to 24h. Requiring Total > 0
+// heals such poisoned caches on the next run without needing --refresh.
+func indexServableFromCache(index *models.ThreadIndex) bool {
+	return index != nil && index.Complete && index.Total > 0 &&
+		time.Since(index.FetchedAt) < 24*time.Hour
+}
+
+// finalizeIndex persists a fully-listed thread index, marking it complete only
+// when it actually contains threads. A half-valid session can make the list
+// endpoint return an empty result with no error; marking that complete would
+// cache a bogus empty index and suppress later runs for 24h (see fetchThreadIndex).
+// Leaving an empty result incomplete forces the next run to re-list.
+func finalizeIndex(jsonExp *export.JSONExporter, index *models.ThreadIndex) error {
+	index.FetchedAt = time.Now().UTC()
+	index.Complete = index.Total > 0
+	return jsonExp.SaveThreadIndex(index)
 }
 
 // continueListThreads resumes listing from a partial index.
@@ -274,9 +302,7 @@ func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client,
 
 	fmt.Printf("\rFetching thread list... %d threads found\n", len(index.Threads))
 
-	index.FetchedAt = time.Now().UTC()
-	index.Complete = true
-	if err := jsonExp.SaveThreadIndex(index); err != nil {
+	if err := finalizeIndex(jsonExp, index); err != nil {
 		return nil, err
 	}
 
