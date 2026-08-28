@@ -324,7 +324,7 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 			}
 			resume := resumePoint(cmd.Refresh, partial)
 			if resume != nil {
-				fmt.Printf("\n  Resuming thread %s from entry %d\n", ref.UUID, resume.NextOffset)
+				fmt.Printf("\n  Resuming thread %s (%d entries so far)\n", ref.UUID, len(resume.Entries))
 			}
 
 			onPage := func(t *models.Thread) error { return jsonExp.ExportThread(t) }
@@ -364,7 +364,7 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 // from, or nil to fetch from the first page. Refresh runs never resume, since
 // entries cached before the thread changed may be stale.
 func resumePoint(refresh bool, partial *models.Thread) *models.Thread {
-	if refresh || partial == nil || partial.Complete || partial.NextOffset <= 0 {
+	if refresh || partial == nil || partial.Complete || partial.NextCursor == "" {
 		return nil
 	}
 	return partial

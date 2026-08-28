@@ -22,9 +22,9 @@ type Thread struct {
 	Entries    []Entry   `json:"entries,omitempty"`
 	Bookmarked bool      `json:"bookmarked,omitempty"`
 	Complete   bool      `json:"complete"`
-	// NextOffset is the pagination offset to resume from when Complete is
-	// false. Entries before it have already been persisted.
-	NextOffset int `json:"next_offset,omitempty"`
+	// NextCursor is the pagination cursor to resume from when Complete is
+	// false. The entries already fetched are persisted alongside it.
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // Entry represents a single query-response pair within a thread.

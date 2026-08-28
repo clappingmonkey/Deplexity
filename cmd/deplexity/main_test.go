@@ -40,7 +40,7 @@ func TestNeedsThreadFetch(t *testing.T) {
 }
 
 func TestResumePoint(t *testing.T) {
-	partial := &models.Thread{NextOffset: 50}
+	partial := &models.Thread{NextCursor: "c1"}
 
 	tests := []struct {
 		name    string
@@ -51,7 +51,7 @@ func TestResumePoint(t *testing.T) {
 		{name: "interrupted fetch", partial: partial, want: true},
 		{name: "refresh discards checkpoint", refresh: true, partial: partial},
 		{name: "no partial on disk"},
-		{name: "already complete", partial: &models.Thread{Complete: true, NextOffset: 50}},
+		{name: "already complete", partial: &models.Thread{Complete: true, NextCursor: "c1"}},
 		{name: "no progress recorded", partial: &models.Thread{}},
 	}
 

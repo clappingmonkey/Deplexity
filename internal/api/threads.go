@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/client"
@@ -10,12 +11,6 @@ import (
 )
 
 const apiVersion = "2.18"
-
-// maxStalePages bounds how many consecutive detail pages may contain only
-// already-seen entries before the fetch concludes the API is recycling
-// results. Pages can legitimately overlap, so a single stale page is not
-// treated as the end of a thread.
-const maxStalePages = 3
 
 type getter interface {
 	Get(context.Context, string, any) error
@@ -105,8 +100,18 @@ func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([
 }
 
 // threadPagePath builds the detail endpoint URL for a single page of a thread.
-func threadPagePath(uuid string, offset int) string {
-	return fmt.Sprintf("/rest/thread/%s?with_schematized_response=true&version=%s&source=default&limit=50&offset=%d&from_first=true&supported_block_use_cases=answer_modes&supported_block_use_cases=preserve_latex", uuid, apiVersion, offset)
+//
+// The endpoint ignores the offset parameter and paginates by cursor: each
+// response returns a next_cursor that must be passed back verbatim. offset is
+// pinned to 0, mirroring the browser. The cursor is URL-encoded JSON, so it is
+// escaped here because the HTTP client concatenates the path onto the base URL
+// without any encoding of its own.
+func threadPagePath(uuid, cursor string) string {
+	path := fmt.Sprintf("/rest/thread/%s?with_schematized_response=true&version=%s&source=default&limit=100&offset=0&from_first=true&supported_block_use_cases=answer_modes&supported_block_use_cases=preserve_latex", uuid, apiVersion)
+	if cursor != "" {
+		path += "&cursor=" + url.QueryEscape(cursor)
+	}
+	return path
 }
 
 // toEntry converts a raw API thread entry into the exported model.
@@ -154,20 +159,21 @@ func toEntry(e ThreadEntry) models.Entry {
 
 // GetThread fetches the full detail of a single thread including all entries.
 //
-// If resume is a previously persisted incomplete thread, fetching continues
-// from its NextOffset instead of restarting from the beginning. onPage, when
-// non-nil, is called after each fetched page so the caller can checkpoint
-// progress; a page fetch failure leaves the last checkpoint on disk to be
-// resumed by a later run.
+// The detail endpoint paginates by cursor: each response carries a next_cursor
+// that is passed back to fetch the following page. If resume is a previously
+// persisted incomplete thread, fetching continues from its NextCursor instead
+// of restarting. onPage, when non-nil, is called after each fetched page so the
+// caller can checkpoint progress; a page fetch failure leaves the last
+// checkpoint on disk to be resumed by a later run.
 func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread, onPage func(*models.Thread) error) (*models.Thread, error) {
 	thread := &models.Thread{UUID: uuid, Slug: uuid}
-	offset := 0
+	cursor := ""
 	seen := make(map[string]bool)
-	resuming := false
-	staleStreak := 0
+	// seenCursors bounds the loop: the endpoint is reverse-engineered, so a
+	// misbehaving response that repeats a cursor must not spin forever.
+	seenCursors := make(map[string]bool)
 
-	if resume != nil && !resume.Complete && resume.NextOffset > 0 {
-		resuming = true
+	if resume != nil && !resume.Complete && resume.NextCursor != "" {
 		thread.Title = resume.Title
 		thread.CreatedAt = resume.CreatedAt
 		thread.UpdatedAt = resume.UpdatedAt
@@ -177,7 +183,8 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 		for _, e := range thread.Entries {
 			seen[e.UUID] = true
 		}
-		offset = resume.NextOffset
+		cursor = resume.NextCursor
+		seenCursors[cursor] = true
 	}
 
 	for {
@@ -188,22 +195,9 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 		}
 
 		var page ThreadDetailResponse
-		if err := c.Get(ctx, threadPagePath(uuid, offset), &page); err != nil {
-			return nil, fmt.Errorf("failed to get thread %s page at offset %d: %w", uuid, offset, err)
+		if err := c.Get(ctx, threadPagePath(uuid, cursor), &page); err != nil {
+			return nil, fmt.Errorf("failed to get thread %s page: %w", uuid, err)
 		}
-
-		// A resumed offset past the end of the thread returns nothing, which
-		// means the checkpoint is stale. Restart from the beginning rather
-		// than marking a truncated thread complete. Only the first resumed
-		// request can trigger this, so the restart cannot repeat.
-		if resuming && len(page.Entries) == 0 {
-			resuming = false
-			thread = &models.Thread{UUID: uuid, Slug: uuid}
-			seen = make(map[string]bool)
-			offset = 0
-			continue
-		}
-		resuming = false
 
 		// Metadata only comes back reliably on the first page of a run.
 		if thread.Title == "" {
@@ -216,44 +210,41 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 			thread.UpdatedAt = parseTime(page.ThreadMetadata.UpdatedAt)
 		}
 
-		// The API recycles results across pages, so skip entries already held.
-		newCount := 0
+		// A cursor boundary can re-include the last entry, so dedupe by UUID.
 		for _, e := range page.Entries {
 			if seen[e.UUID] {
 				continue
 			}
 			seen[e.UUID] = true
-			newCount++
 			thread.Entries = append(thread.Entries, toEntry(e))
 		}
 
-		if !page.HasNextPage || len(page.Entries) == 0 {
+		// The thread ends when the API reports no further page or omits the
+		// next cursor. Both are checked to guard against inconsistent responses.
+		if !page.HasNextPage || page.NextCursor == nil || *page.NextCursor == "" {
 			break
 		}
 
-		// Pages can overlap, so a single page with nothing new does not prove
-		// the thread has ended. Tolerate a bounded run of them before treating
-		// the API as recycling, which also guarantees termination.
-		if newCount == 0 {
-			staleStreak++
-			if staleStreak >= maxStalePages {
-				break
-			}
-		} else {
-			staleStreak = 0
+		cursor = *page.NextCursor
+		// A cursor that has already been used this run means the API is not
+		// advancing. Stop with an error so the last good checkpoint on disk is
+		// preserved for a later resume instead of looping or marking the
+		// partially-fetched thread complete.
+		if seenCursors[cursor] {
+			return nil, fmt.Errorf("thread %s did not advance past cursor: possible API pagination loop", uuid)
 		}
+		seenCursors[cursor] = true
 
-		offset += len(page.Entries)
-		thread.NextOffset = offset
+		thread.NextCursor = cursor
 		if onPage != nil {
 			if err := onPage(thread); err != nil {
-				return nil, fmt.Errorf("failed to checkpoint thread %s at offset %d: %w", uuid, offset, err)
+				return nil, fmt.Errorf("failed to checkpoint thread %s: %w", uuid, err)
 			}
 		}
 	}
 
 	thread.Complete = true
-	thread.NextOffset = 0
+	thread.NextCursor = ""
 	return thread, nil
 }
 

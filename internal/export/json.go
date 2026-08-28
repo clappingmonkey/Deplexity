@@ -210,21 +210,44 @@ func (e *JSONExporter) threadDir(thread *models.Thread) string {
 	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
 }
 
-// writeJSON writes data as indented JSON to a file.
+// writeJSON writes data as indented JSON to a file atomically.
+//
+// Data is written to a temp file in the same directory and renamed over the
+// target, so a crash mid-write cannot corrupt an existing file. This matters
+// for thread.json, which is rewritten on every pagination checkpoint and must
+// stay a valid resume point even if a later write fails.
 func writeJSON(path string, data interface{}) error {
-	f, err := os.Create(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("could not create %s: %w", path, err)
+		return fmt.Errorf("could not create temp file for %s: %w", path, err)
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we return before the rename succeeds.
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
 
-	enc := json.NewEncoder(f)
+	enc := json.NewEncoder(tmp)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 
 	if err := enc.Encode(data); err != nil {
+		tmp.Close()
 		return fmt.Errorf("could not write JSON to %s: %w", path, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not flush %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("could not close temp file for %s: %w", path, err)
+	}
 
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("could not replace %s: %w", path, err)
+	}
+	tmpName = "" // rename succeeded; skip cleanup
 	return nil
 }

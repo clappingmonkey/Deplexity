@@ -1,6 +1,8 @@
 package export
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -46,5 +48,43 @@ func TestLoadCompleteThreadPreservesMetadata(t *testing.T) {
 	}
 	if !loaded.UpdatedAt.Equal(updatedAt) {
 		t.Errorf("UpdatedAt = %v, want %v", loaded.UpdatedAt, updatedAt)
+	}
+}
+
+func TestWriteJSONFailedWriteLeavesExistingFileIntact(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "thread.json")
+
+	if err := writeJSON(path, map[string]string{"state": "good"}); err != nil {
+		t.Fatalf("writeJSON (initial): %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read initial file: %v", err)
+	}
+
+	// A channel cannot be JSON-encoded, so Encode fails after the temp file
+	// is created but before the rename. The original file must survive.
+	if err := writeJSON(path, make(chan int)); err == nil {
+		t.Fatal("writeJSON succeeded encoding an unserializable value")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("original file missing after failed write: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("original file changed after failed write:\n before=%s\n after=%s", before, after)
+	}
+
+	// No temp files should be left behind.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "thread.json" {
+			t.Errorf("leftover file after failed write: %s", e.Name())
+		}
 	}
 }
