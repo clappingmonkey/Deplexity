@@ -131,7 +131,9 @@ deplexity-export/
 │   ├── index.json
 │   ├── spaces.md
 │   └── <space-name>/
-│       ├── space.json
+│       ├── space.json         # Incl. AI instructions, suggested queries, primers, skills metadata
+│       ├── skills/            # Attached skills' SKILL.md bodies (referenced by space.json)
+│       │   └── <skill-name>.md
 │       └── threads/           # Self-contained copies of this space's threads
 │           └── <thread-slug>/
 │               ├── thread.json
@@ -147,6 +149,8 @@ deplexity-export/
 ```
 
 Each space folder is self-contained — you can ZIP and share a single space without needing the top-level `threads/` directory.
+
+Space exports capture each space's full context: its custom AI instructions, description, suggested queries, primers, and any attached skills. Skill definitions are written as `SKILL.md` files under `spaces/<space-name>/skills/` and referenced from `space.json`.
 
 ---
 
@@ -232,8 +236,8 @@ Key design decisions:
 
 - Session tokens are stored with `0600` permissions in `~/.config/deplexity/`
 - No credentials are ever logged or transmitted to third parties
-- The tool only communicates with `perplexity.ai`
-- All HTTP requests use the same TLS fingerprint and headers as a real Chrome session
+- Requests to Perplexity use the same TLS fingerprint and headers as a real Chrome session
+- Skill bodies are downloaded from the pre-signed storage URLs (Amazon S3) that Perplexity returns; these fetches deliberately carry **no** session cookie or Perplexity headers, so your credentials are never sent off-platform
 
 ---
 
