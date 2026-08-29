@@ -33,15 +33,15 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 
 - `internal/api/types.go` — **raw API response structs** (JSON tags match Perplexity's undocumented internal API, verified against live responses May 2026, API v2.18).
 - `internal/api/threads.go` — `ListThreads`, `ListThreadsFrom` (POST `list_ask_threads` with pagination, dual stop condition), `GetThread`.
-- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`.
+- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`, then always-on fail-soft enrichment: `GetCollection` (per-space instructions/description/suggested_queries/primers) and `ListSpaceSkills`/`GetSkillDetail` (collection-scoped skills + SKILL.md body).
 - `internal/api/user.go` — `GetUser` via `GET /api/user`.
 - `internal/models/models.go` — clean domain models used throughout the app (decoupled from API shape).
 - `internal/auth/` — browser-based login via `go-rod/rod` (visible Chrome), cookie capture, session persistence. Also supports `--cookie` for manual token auth.
-- `internal/client/client.go` — authenticated `net/http` client with raw `Cookie` header, adaptive rate limiting, separate HTTP (429/5xx) and network (DNS/dial/TLS) retry loops. All methods accept `context.Context`.
+- `internal/client/client.go` — authenticated `net/http` client with raw `Cookie` header, adaptive rate limiting, separate HTTP (429/5xx) and network (DNS/dial/TLS) retry loops. All methods accept `context.Context`. Also provides `GetRawURL` for fetching absolute third-party URLs (pre-signed S3 skill bodies) *without* the session cookie/Origin/`x-app-*` headers; it validates the target is `https` with a non-empty host and caps the body at 10 MB (`io.LimitReader`, errors on overflow rather than truncating).
 - `internal/client/transport.go` — Chrome TLS fingerprint via `refraction-networking/utls` to bypass Cloudflare.
 - `internal/client/ratelimit.go` — `RetryWithBackoff`, `computeBackoff`, shared retry constants.
 - `internal/export/` — JSON, Markdown, and PDF exporters. PDF uses `gpdf` (pure Go, zero dependencies). JSON exporter handles `thread_index.json` persistence for resumable exports. All exporters copy thread files into space folders for self-contained output.
-- `internal/export/util.go` — shared helpers: `sanitizeFilename`, `threadSlug`.
+- `internal/export/util.go` — shared helpers: `sanitizeFilename`, `threadSlug`, and `skillFilenames`/`shortID` (collision-free `.md` filenames for a space's skills, disambiguated by a short skill-ID suffix; used by both the JSON and Markdown exporters so their sidecar paths and links agree).
 - CLI framework: `alecthomas/kong` (struct-tag based). Commands defined as types with `Run(ctx context.Context) error` methods in `main.go`.
 
 ## Browser Dependency
@@ -65,7 +65,10 @@ All endpoints are reverse-engineered from browser DevTools (May 2026, API versio
 |--------|----------|---------|
 | POST | `/rest/thread/list_ask_threads` | All threads with pagination (body: `{limit, offset, ascending, ...}`) |
 | GET | `/rest/thread/{uuid}?with_schematized_response=true` | Thread detail with full entries |
-| GET | `/rest/spaces` | All spaces (private/shared/invited/org/saved) |
+| GET | `/rest/spaces` | All spaces (private/shared/invited/org/saved) — list only, omits instructions/skills |
+| GET | `/rest/collections/get_collection?collection_slug={slug}` | Per-space detail: instructions, description, suggested_queries, primers (param must be `collection_slug`; `collection_uuid` → 422) |
+| GET | `/rest/skills/selectable?collection_uuid={uuid}` | Skills selectable in a space; space-attached skills have `scope=="collection"` (vs `global`) |
+| GET | `/rest/skills/{id}?view_scope=individual` | Skill detail incl. pre-signed S3 `file_url` for the SKILL.md body |
 | GET | `/api/user` | User profile |
 | GET | `/api/auth/session` | Session info + expiry |
 | GET | `/rest/user/settings` | Limits, quotas, connector config |
@@ -92,6 +95,7 @@ Use `--refresh` to force re-fetching the thread index.
 - Cloudflare blocks HTML page fetching even with valid cookies, but `/rest/` API endpoints work fine.
 - `deplexity login` must be run before `export` — there is no inline auth flow. Alternatively, use `deplexity login --cookie <TOKEN>` for headless/server environments.
 - Raw `Cookie` header is used instead of `http.CookieJar`/`AddCookie` to avoid Go's cookie domain validation issues.
+- `sanitizeFilename` lowercases names, so on-disk space/skill paths are lowercase (e.g. a "Recipes" space → `spaces/recipes/`, its skills → `spaces/recipes/skills/<name>.md`). Tests asserting these paths must derive them via `sanitizeFilename` (or use the lowercase form) rather than hardcoding the display name — a hardcoded `"Recipes"` passes on case-insensitive macOS but fails on case-sensitive Linux (CI).
 - Signal handling: first Ctrl+C cancels the context (graceful stop after current operation), second Ctrl+C force-exits via default OS handler. Implemented via `signal.NotifyContext` + dedicated `signal.Notify` channel (avoids spurious message on normal exit).
 - PDF sources rendered as numbered list `"N. Title (domain)"` — avoids gpdf hang on long unbreakable URLs (S3 pre-signed URLs up to 1600 chars). Previous table layout caused infinite loops in gpdf's word-wrap.
 - Multi-threaded PDF export: `--pdf-workers` flag (default: `runtime.NumCPU()`). Each worker creates its own `gpdf.Document` so no locking needed.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -108,7 +109,9 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 			sb.WriteString(fmt.Sprintf("%s\n\n", space.Description))
 		}
 		if space.Instructions != "" {
-			sb.WriteString(fmt.Sprintf("**AI Instructions:**\n\n> %s\n\n", space.Instructions))
+			sb.WriteString("**AI Instructions:**\n\n")
+			sb.WriteString(blockquote(space.Instructions))
+			sb.WriteString("\n")
 		}
 		sb.WriteString(fmt.Sprintf("- **UUID:** %s\n", space.UUID))
 		if space.CreatedAt != nil {
@@ -117,11 +120,50 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 		if len(space.ThreadUUIDs) > 0 {
 			sb.WriteString(fmt.Sprintf("- **Threads:** %d\n", len(space.ThreadUUIDs)))
 		}
+
+		if len(space.SuggestedQueries) > 0 {
+			sb.WriteString("\n**Suggested Queries:**\n\n")
+			for _, q := range space.SuggestedQueries {
+				sb.WriteString(fmt.Sprintf("- %s\n", q))
+			}
+		}
+
+		if len(space.Primers) > 0 {
+			sb.WriteString("\n**Primers:**\n\n")
+			for _, p := range space.Primers {
+				sb.WriteString(fmt.Sprintf("- *%s*\n", p.PrimerType))
+				for _, q := range p.Queries {
+					sb.WriteString(fmt.Sprintf("  - %s\n", q))
+				}
+			}
+		}
+
+		if len(space.Skills) > 0 {
+			sb.WriteString("\n**Skills:**\n\n")
+			spaceSlug := sanitizeFilename(space.Name)
+			filenames := skillFilenames(space.Skills)
+			for i, sk := range space.Skills {
+				if sk.Body != "" {
+					// Link relative to spaces.md, which lives in the spaces dir.
+					// path.Join (forward slashes) keeps the Markdown link valid
+					// on every OS, unlike filepath.Join on Windows.
+					link := path.Join(spaceSlug, "skills", filenames[i])
+					sb.WriteString(fmt.Sprintf("- [%s](%s)", sk.Name, link))
+				} else {
+					sb.WriteString(fmt.Sprintf("- %s", sk.Name))
+				}
+				if sk.Description != "" {
+					sb.WriteString(fmt.Sprintf(" — %s", sk.Description))
+				}
+				sb.WriteString("\n")
+			}
+		}
+
 		sb.WriteString("\n---\n\n")
 	}
 
-	path := filepath.Join(dir, "spaces.md")
-	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+	spacesMD := filepath.Join(dir, "spaces.md")
+	if err := os.WriteFile(spacesMD, []byte(sb.String()), 0644); err != nil {
 		return fmt.Errorf("could not write spaces markdown: %w", err)
 	}
 
@@ -131,6 +173,13 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
 	for _, space := range spaces {
+		spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
+
+		// Write skill bodies as SKILL.md sidecar files.
+		if err := writeSpaceSkillBodies(spaceDir, space.Skills); err != nil {
+			return err
+		}
+
 		for _, uuid := range space.ThreadUUIDs {
 			select {
 			case <-ctx.Done():
@@ -141,7 +190,6 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 			if thread == nil {
 				continue
 			}
-			spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
 			threadDir := filepath.Join(spaceDir, "threads", sanitizeFilename(threadSlug(thread)))
 			if err := writeThreadMarkdown(threadDir, thread); err != nil {
 				return err
@@ -149,6 +197,29 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 		}
 	}
 
+	return nil
+}
+
+// writeSpaceSkillBodies writes each skill's SKILL.md body into a skills/
+// subfolder of the space directory. Skills without a fetched body are skipped.
+func writeSpaceSkillBodies(spaceDir string, skills []models.Skill) error {
+	filenames := skillFilenames(skills)
+	var skillsDir string
+	for i := range skills {
+		if skills[i].Body == "" {
+			continue
+		}
+		if skillsDir == "" {
+			skillsDir = filepath.Join(spaceDir, "skills")
+			if err := os.MkdirAll(skillsDir, 0755); err != nil {
+				return fmt.Errorf("could not create skills directory: %w", err)
+			}
+		}
+		filename := filenames[i]
+		if err := os.WriteFile(filepath.Join(skillsDir, filename), []byte(skills[i].Body), 0644); err != nil {
+			return fmt.Errorf("could not write skill body %s: %w", filename, err)
+		}
+	}
 	return nil
 }
 
@@ -179,4 +250,21 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 // threadDir returns the output directory for a thread.
 func (e *MarkdownExporter) threadDir(thread *models.Thread) string {
 	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+}
+
+// blockquote renders text as a Markdown blockquote, prefixing every line with
+// "> " so multi-line instructions render correctly instead of collapsing into
+// a single quoted line. The result ends with a trailing newline.
+func blockquote(text string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			sb.WriteString(">\n")
+			continue
+		}
+		sb.WriteString("> ")
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

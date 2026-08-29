@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
@@ -148,11 +149,23 @@ func (e *JSONExporter) ExportSpaces(ctx context.Context, spaces []models.Space, 
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
 
-	for _, space := range spaces {
+	// Iterate by index (&spaces[i]) rather than a range copy: writeSpaceSkills
+	// records each skill's BodyFile in place, and that mutation must be visible
+	// to the space.json serialization below.
+	for i := range spaces {
+		space := &spaces[i]
 		spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
 		if err := os.MkdirAll(spaceDir, 0755); err != nil {
 			return fmt.Errorf("could not create space directory: %w", err)
 		}
+
+		// Write skill bodies as sidecar SKILL.md files and record their
+		// relative paths so space.json references them. Done before writing
+		// space.json so the body_file field is populated.
+		if err := e.writeSpaceSkills(spaceDir, space.Skills); err != nil {
+			return err
+		}
+
 		if err := writeJSON(filepath.Join(spaceDir, "space.json"), space); err != nil {
 			return err
 		}
@@ -208,6 +221,34 @@ func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
 // threadDir returns the output directory for a thread.
 func (e *JSONExporter) threadDir(thread *models.Thread) string {
 	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+}
+
+// writeSpaceSkills writes each skill's SKILL.md body into a skills/ subfolder
+// of the space directory and records the relative path on the skill so that
+// space.json references it. Skills without a fetched body are left as
+// metadata-only. It mutates the BodyFile field of each skill in place.
+func (e *JSONExporter) writeSpaceSkills(spaceDir string, skills []models.Skill) error {
+	filenames := skillFilenames(skills)
+	var skillsDir string
+	for i := range skills {
+		if skills[i].Body == "" {
+			continue
+		}
+		if skillsDir == "" {
+			skillsDir = filepath.Join(spaceDir, "skills")
+			if err := os.MkdirAll(skillsDir, 0755); err != nil {
+				return fmt.Errorf("could not create skills directory: %w", err)
+			}
+		}
+		filename := filenames[i]
+		if err := os.WriteFile(filepath.Join(skillsDir, filename), []byte(skills[i].Body), 0644); err != nil {
+			return fmt.Errorf("could not write skill body %s: %w", filename, err)
+		}
+		// Use path.Join (forward slashes) so body_file is portable in JSON
+		// consumed on any OS.
+		skills[i].BodyFile = path.Join("skills", filename)
+	}
+	return nil
 }
 
 // writeJSON writes data as indented JSON to a file atomically.

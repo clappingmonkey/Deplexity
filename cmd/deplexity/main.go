@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -130,6 +131,11 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		fmt.Print("Fetching spaces...")
 		spaces, err = api.ListCollections(ctx, c)
 		if err != nil {
+			// Cancellation must abort the whole export, not be swallowed as a
+			// skipped section.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			fmt.Fprintf(os.Stderr, " skipped (%v)\n", err)
 			spaces = nil
 		} else {

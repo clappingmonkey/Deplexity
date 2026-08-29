@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // User represents a Perplexity user profile.
 type User struct {
@@ -47,6 +50,9 @@ type Source struct {
 }
 
 // Space represents a Perplexity Space (collection).
+//
+// Core identity fields (Name, UpdatedAt) keep their existing JSON keys for
+// backwards compatibility. Fields added for issue #61 use the raw API names.
 type Space struct {
 	UUID         string     `json:"uuid"`
 	Name         string     `json:"name"`
@@ -57,6 +63,48 @@ type Space struct {
 	CreatedAt    *time.Time `json:"created_at,omitempty"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	ThreadUUIDs  []string   `json:"thread_uuids,omitempty"`
+
+	// Enrichment fields from GET /rest/collections/get_collection (issue #61).
+	URL                             string          `json:"url,omitempty"`
+	KnowledgeDreamInstructions      string          `json:"knowledge_dream_instructions,omitempty"`
+	ProjectStatusSummaryInstruction string          `json:"project_status_summary_instruction,omitempty"`
+	SuggestedQueries                []string        `json:"suggested_queries,omitempty"`
+	Primers                         []Primer        `json:"primers,omitempty"`
+	FocusedWebConfig                json.RawMessage `json:"focused_web_config,omitempty"`
+	MemoryMode                      string          `json:"memory_mode,omitempty"`
+	Access                          int             `json:"access,omitempty"`
+	UserPermission                  int             `json:"user_permission,omitempty"`
+	ThreadCount                     int             `json:"thread_count,omitempty"`
+	PageCount                       int             `json:"page_count,omitempty"`
+	FileCount                       int             `json:"file_count,omitempty"`
+
+	// Skills attached to this space (scope == "collection").
+	Skills []Skill `json:"skills,omitempty"`
+}
+
+// Primer is a primer entry on a space (grouped queries by type).
+type Primer struct {
+	PrimerType string   `json:"primer_type"`
+	Queries    []string `json:"queries"`
+}
+
+// Skill represents a skill attached to a space. The SKILL.md body is fetched
+// during enrichment (the source URL is a short-lived pre-signed link) and
+// written to a sidecar file by the exporters; it is not embedded in JSON.
+type Skill struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Scope       string            `json:"scope,omitempty"`
+	Categories  []string          `json:"categories,omitempty"`
+	Tags        map[string]string `json:"tags,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+	UpdatedAt   string            `json:"updated_at,omitempty"`
+	// BodyFile is the relative path to the written SKILL.md (e.g. "skills/git-commit.md").
+	BodyFile string `json:"body_file,omitempty"`
+	// Body holds the fetched SKILL.md content. Not serialized to JSON; written
+	// to a sidecar file by the exporters.
+	Body string `json:"-"`
 }
 
 // ExportManifest holds metadata about an export run.

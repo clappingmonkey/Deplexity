@@ -1,5 +1,7 @@
 package api
 
+import "encoding/json"
+
 // These types represent the raw API response shapes from Perplexity's internal API.
 // Reverse-engineered from live API responses (May 2026, API version 2.18).
 
@@ -66,6 +68,91 @@ type SpaceItem struct {
 	Emoji       string `json:"emoji"`
 	Updated     string `json:"updated"`
 	HasNextPage bool   `json:"has_next_page"`
+}
+
+// --- Space Detail: GET /rest/collections/get_collection?collection_slug={slug} ---
+//
+// The spaces list endpoint omits per-space configuration (instructions,
+// description, suggested queries, primers). This detail endpoint carries them.
+// Note: the query param must be collection_slug — collection_uuid returns 422.
+
+// CollectionDetailResponse is the shape of GET /rest/collections/get_collection.
+type CollectionDetailResponse struct {
+	UUID                            string           `json:"uuid"`
+	Title                           string           `json:"title"`
+	Slug                            string           `json:"slug"`
+	Emoji                           string           `json:"emoji"`
+	URL                             string           `json:"url"`
+	Description                     string           `json:"description"`
+	Instructions                    string           `json:"instructions"`
+	KnowledgeDreamInstructions      string           `json:"knowledge_dream_instructions"`
+	ProjectStatusSummaryInstruction string           `json:"project_status_summary_instruction"`
+	SuggestedQueries                []SuggestedQuery `json:"suggested_queries"`
+	Primers                         []Primer         `json:"primers"`
+	FocusedWebConfig                json.RawMessage  `json:"focused_web_config"`
+	MemoryMode                      string           `json:"memory_mode"`
+	Access                          int              `json:"access"`
+	UserPermission                  int              `json:"user_permission"`
+	ThreadCount                     int              `json:"thread_count"`
+	PageCount                       int              `json:"page_count"`
+	FileCount                       int              `json:"file_count"`
+	UpdatedDatetime                 string           `json:"updated_datetime"`
+}
+
+// SuggestedQuery is a single suggested query on a space.
+type SuggestedQuery struct {
+	Query string `json:"query"`
+}
+
+// Primer is a primer entry on a space (grouped queries by type).
+type Primer struct {
+	PrimerType string   `json:"primer_type"`
+	Queries    []string `json:"queries"`
+}
+
+// --- Skills ---
+//
+// Space-attached skills are fetched via /rest/skills/selectable filtered by
+// collection_uuid. Space-specific skills carry scope=="collection"; global
+// skills carry scope=="global". Full skill detail (including a pre-signed S3
+// file_url for the SKILL.md body) comes from /rest/skills/{id}.
+
+// SkillsSelectableResponse is the shape of GET /rest/skills/selectable.
+type SkillsSelectableResponse struct {
+	Skills     []SkillSummary `json:"skills"`
+	NextCursor *string        `json:"next_cursor"`
+}
+
+// SkillSummary is a skill entry in the selectable list.
+type SkillSummary struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Description        string `json:"description"`
+	DisplayName        string `json:"display_name"`
+	DisplayDescription string `json:"display_description"`
+	Scope              string `json:"scope"`
+}
+
+// SkillDetailResponse is the shape of GET /rest/skills/{id}.
+type SkillDetailResponse struct {
+	IsOwner   bool             `json:"is_owner"`
+	IsCreator bool             `json:"is_creator"`
+	Enabled   bool             `json:"enabled"`
+	Installed bool             `json:"installed"`
+	Skill     SkillDetailInner `json:"skill"`
+}
+
+// SkillDetailInner is the nested skill object in the skill detail response.
+type SkillDetailInner struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Scope       string            `json:"scope"`
+	FileURL     string            `json:"file_url"`
+	Categories  []string          `json:"categories"`
+	Tags        map[string]string `json:"tags"`
+	CreatedAt   string            `json:"created_at"`
+	UpdatedAt   string            `json:"updated_at"`
 }
 
 // --- Thread Detail: GET /rest/thread/{uuid} ---
