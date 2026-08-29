@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/clappingmonkey/Deplexity/compare/v0.2.6...v0.3.0) (2026-08-29)
+
+
+### Features
+
+* export space instructions and attached skills ([#62](https://github.com/clappingmonkey/Deplexity/issues/62)) ([bbcc186](https://github.com/clappingmonkey/Deplexity/commit/bbcc186266e17bd5a7e6bbc0ee9d2a8aca27c50e))
+
 ## [0.2.6](https://github.com/clappingmonkey/Deplexity/compare/v0.2.5...v0.2.6) (2026-08-28)
 
 
