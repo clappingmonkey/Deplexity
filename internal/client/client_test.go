@@ -84,6 +84,44 @@ func TestClientGetContextCancellation(t *testing.T) {
 	}
 }
 
+func TestGetRawURLIsolatesHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("skill body"))
+	}))
+	defer srv.Close()
+
+	// Client carries a session cookie that must NOT leak to the raw URL.
+	c := &Client{
+		http:    srv.Client(),
+		baseURL: "https://www.perplexity.ai",
+		delay:   0,
+		cookies: []*http.Cookie{{Name: "__Secure-next-auth.session-token", Value: "secret"}},
+	}
+
+	body, err := c.GetRawURL(context.Background(), srv.URL+"/skill/SKILL.md")
+	if err != nil {
+		t.Fatalf("GetRawURL: %v", err)
+	}
+	if string(body) != "skill body" {
+		t.Errorf("body = %q, want %q", string(body), "skill body")
+	}
+
+	// The Perplexity session cookie and API/Origin headers must be absent.
+	forbidden := []string{"Cookie", "Origin", "Referer", "X-App-Apiclient", "X-App-Apiversion"}
+	for _, h := range forbidden {
+		if v := got.Get(h); v != "" {
+			t.Errorf("GetRawURL leaked header %s = %q to third-party URL", h, v)
+		}
+	}
+	// User-Agent is still sent (benign, needed by some CDNs).
+	if got.Get("User-Agent") == "" {
+		t.Error("GetRawURL should still send a User-Agent")
+	}
+}
+
 func TestNewClient(t *testing.T) {
 	session := &models.SavedSession{
 		SessionToken: "tok",

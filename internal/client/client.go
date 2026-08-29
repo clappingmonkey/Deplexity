@@ -278,6 +278,106 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	}
 }
 
+// maxRawURLBody caps how much data GetRawURL will read into memory. Skill
+// SKILL.md bodies are small (KBs); this guards against a misdirected or
+// erroring pre-signed URL returning an unexpectedly large payload.
+const maxRawURLBody = 10 << 20 // 10 MB
+
+// GetRawURL fetches an absolute URL and returns the raw response body.
+//
+// Unlike Get/GetRaw, it does not prepend baseURL and does not attach the
+// Perplexity session cookie, Origin, or API headers. It is intended for
+// fetching pre-signed third-party URLs (e.g. S3-hosted skill bodies) that
+// require no authentication and must not receive our session cookie. It reuses
+// the same uTLS transport and the standard HTTP/network retry loops.
+//
+// Also unlike Get/GetRaw, a 401/403 is not treated as a Perplexity auth
+// failure (ErrNotAuthenticated): the target is a third-party URL, so such a
+// status typically means the pre-signed URL has expired.
+func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
+	httpAttempt := 0
+	netAttempt := 0
+
+	for {
+		if httpAttempt > maxRetries {
+			return nil, fmt.Errorf("request to %s failed after %d retries", rawURL, maxRetries)
+		}
+		if netAttempt > maxNetworkRetries {
+			return nil, fmt.Errorf("request to %s failed after %d network retries", rawURL, maxNetworkRetries)
+		}
+
+		// Reuse the shared inter-request pacing so a single client stays polite
+		// across mixed Perplexity/S3 traffic. The adaptive delay is capped
+		// (maxDelay) and skill bodies are fetched eagerly, so this stays well
+		// inside the pre-signed URL's ~15 min validity window. onSuccess/
+		// onRateLimited are intentionally NOT called: S3 rate limits are
+		// independent of Perplexity's and must not perturb its adaptive delay.
+		c.rateLimit()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("could not create request for %s: %w", rawURL, err)
+		}
+		// Minimal headers only; no auth cookie or Perplexity-specific headers.
+		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("Accept", "*/*")
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			netAttempt++
+			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
+			if c.verbose {
+				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		netAttempt = 0
+
+		if c.verbose {
+			log.Printf("[DEBUG] %s %s → %d", req.Method, req.URL.String(), resp.StatusCode)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			resp.Body.Close()
+			httpAttempt++
+			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
+			if c.verbose {
+				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxRawURLBody))
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("could not read response from %s: %w", rawURL, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected response from %s: HTTP %d — %s", rawURL, resp.StatusCode, string(body))
+		}
+
+		return body, nil
+	}
+}
+
 // Post performs an authenticated POST request with a JSON body and decodes the response into dest.
 func (c *Client) Post(ctx context.Context, path string, body interface{}, dest interface{}) error {
 	fullURL := c.baseURL + path

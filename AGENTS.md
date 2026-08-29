@@ -33,7 +33,7 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 
 - `internal/api/types.go` — **raw API response structs** (JSON tags match Perplexity's undocumented internal API, verified against live responses May 2026, API v2.18).
 - `internal/api/threads.go` — `ListThreads`, `ListThreadsFrom` (POST `list_ask_threads` with pagination, dual stop condition), `GetThread`.
-- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`.
+- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`, then always-on fail-soft enrichment: `GetCollection` (per-space instructions/description/suggested_queries/primers) and `ListSpaceSkills`/`GetSkillDetail` (collection-scoped skills + SKILL.md body).
 - `internal/api/user.go` — `GetUser` via `GET /api/user`.
 - `internal/models/models.go` — clean domain models used throughout the app (decoupled from API shape).
 - `internal/auth/` — browser-based login via `go-rod/rod` (visible Chrome), cookie capture, session persistence. Also supports `--cookie` for manual token auth.
@@ -65,7 +65,10 @@ All endpoints are reverse-engineered from browser DevTools (May 2026, API versio
 |--------|----------|---------|
 | POST | `/rest/thread/list_ask_threads` | All threads with pagination (body: `{limit, offset, ascending, ...}`) |
 | GET | `/rest/thread/{uuid}?with_schematized_response=true` | Thread detail with full entries |
-| GET | `/rest/spaces` | All spaces (private/shared/invited/org/saved) |
+| GET | `/rest/spaces` | All spaces (private/shared/invited/org/saved) — list only, omits instructions/skills |
+| GET | `/rest/collections/get_collection?collection_slug={slug}` | Per-space detail: instructions, description, suggested_queries, primers (param must be `collection_slug`; `collection_uuid` → 422) |
+| GET | `/rest/skills/selectable?collection_uuid={uuid}` | Skills selectable in a space; space-attached skills have `scope=="collection"` (vs `global`) |
+| GET | `/rest/skills/{id}?view_scope=individual` | Skill detail incl. pre-signed S3 `file_url` for the SKILL.md body |
 | GET | `/api/user` | User profile |
 | GET | `/api/auth/session` | Session info + expiry |
 | GET | `/rest/user/settings` | Limits, quotas, connector config |

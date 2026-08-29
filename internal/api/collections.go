@@ -2,13 +2,45 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net/url"
 
 	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
-// ListCollections fetches all user spaces/collections via GET /rest/spaces.
+// isCancellation reports whether err was caused by context cancellation or
+// deadline expiry, which must abort enrichment rather than be logged and
+// skipped like ordinary fail-soft errors.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// rawGetter fetches an absolute URL and returns the raw body. It is satisfied
+// by *client.Client via GetRawURL and is used to download skill bodies from
+// short-lived pre-signed URLs.
+type rawGetter interface {
+	GetRawURL(context.Context, string) ([]byte, error)
+}
+
+// enricher is the client capability set needed to enrich spaces: JSON GETs for
+// detail/skill endpoints plus raw fetches for skill bodies.
+type enricher interface {
+	getter
+	rawGetter
+}
+
+// ListCollections fetches all user spaces/collections via GET /rest/spaces and
+// enriches each with per-space detail (instructions, description, suggested
+// queries, primers) and attached skills.
+//
+// The list endpoint omits all per-space configuration, so each space is
+// enriched with a GET /rest/collections/get_collection call and its
+// collection-scoped skills. Enrichment is best-effort: a failure to enrich one
+// space (or one of its skills) is logged and skipped rather than aborting the
+// whole export, so a single broken space never loses the rest of the data.
 func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, error) {
 	var raw SpacesResponse
 	path := fmt.Sprintf("/rest/spaces?version=%s&source=default", apiVersion)
@@ -27,14 +59,195 @@ func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, err
 	allItems = append(allItems, raw.OrganizationSpaces...)
 
 	for _, item := range allItems {
-		spaces = append(spaces, models.Space{
+		space := models.Space{
 			UUID:      item.UUID,
 			Name:      item.Title,
 			Slug:      item.Slug,
 			Emoji:     item.Emoji,
 			UpdatedAt: parseTime(item.Updated),
-		})
+		}
+
+		// Enrich with per-space detail (fail-soft).
+		if err := enrichSpaceDetail(ctx, c, &space); err != nil {
+			// Context cancellation should propagate; other errors are skipped.
+			if isCancellation(err) {
+				return nil, err
+			}
+			log.Printf("warning: could not fetch details for space %q (%s): %v", space.Name, space.Slug, err)
+		}
+
+		// Enrich with collection-scoped skills (fail-soft).
+		if err := enrichSpaceSkills(ctx, c, &space); err != nil {
+			if isCancellation(err) {
+				return nil, err
+			}
+			log.Printf("warning: could not fetch skills for space %q (%s): %v", space.Name, space.Slug, err)
+		}
+
+		spaces = append(spaces, space)
 	}
 
 	return spaces, nil
+}
+
+// GetCollection fetches per-space detail via GET /rest/collections/get_collection.
+//
+// The endpoint requires collection_slug — passing collection_uuid returns 422.
+func GetCollection(ctx context.Context, c getter, slug string) (*CollectionDetailResponse, error) {
+	var detail CollectionDetailResponse
+	path := fmt.Sprintf(
+		"/rest/collections/get_collection?collection_slug=%s&version=%s&source=default",
+		url.QueryEscape(slug), apiVersion,
+	)
+	if err := c.Get(ctx, path, &detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
+}
+
+// ListSpaceSkills fetches the skills selectable within a space via
+// GET /rest/skills/selectable?collection_uuid={uuid}, following next_cursor
+// pagination so that spaces with many skills are fully captured.
+func ListSpaceSkills(ctx context.Context, c getter, collectionUUID string) ([]SkillSummary, error) {
+	var all []SkillSummary
+	cursor := ""
+
+	// Guard against a non-advancing cursor from the reverse-engineered API.
+	seenCursors := map[string]bool{}
+
+	for {
+		path := fmt.Sprintf(
+			"/rest/skills/selectable?collection_uuid=%s&version=%s&source=default",
+			url.QueryEscape(collectionUUID), apiVersion,
+		)
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+
+		var resp SkillsSelectableResponse
+		if err := c.Get(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Skills...)
+
+		if resp.NextCursor == nil || *resp.NextCursor == "" {
+			break
+		}
+		if seenCursors[*resp.NextCursor] {
+			// The cursor is repeating; stop rather than loop forever.
+			log.Printf("warning: skills pagination cursor repeated for space %s; stopping", collectionUUID)
+			break
+		}
+		seenCursors[*resp.NextCursor] = true
+		cursor = *resp.NextCursor
+	}
+
+	return all, nil
+}
+
+// GetSkillDetail fetches full skill detail via GET /rest/skills/{id}. The
+// returned Skill.FileURL is a short-lived pre-signed URL for the SKILL.md body.
+func GetSkillDetail(ctx context.Context, c getter, skillID string) (*SkillDetailResponse, error) {
+	var detail SkillDetailResponse
+	path := fmt.Sprintf(
+		"/rest/skills/%s?view_scope=individual&version=%s&source=default",
+		url.PathEscape(skillID), apiVersion,
+	)
+	if err := c.Get(ctx, path, &detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
+}
+
+// enrichSpaceDetail populates a space with detail from get_collection.
+func enrichSpaceDetail(ctx context.Context, c getter, space *models.Space) error {
+	detail, err := GetCollection(ctx, c, space.Slug)
+	if err != nil {
+		return err
+	}
+
+	space.Description = detail.Description
+	space.Instructions = detail.Instructions
+	space.URL = detail.URL
+	space.KnowledgeDreamInstructions = detail.KnowledgeDreamInstructions
+	space.ProjectStatusSummaryInstruction = detail.ProjectStatusSummaryInstruction
+	space.FocusedWebConfig = detail.FocusedWebConfig
+	space.MemoryMode = detail.MemoryMode
+	space.Access = detail.Access
+	space.UserPermission = detail.UserPermission
+	space.ThreadCount = detail.ThreadCount
+	space.PageCount = detail.PageCount
+	space.FileCount = detail.FileCount
+
+	for _, sq := range detail.SuggestedQueries {
+		space.SuggestedQueries = append(space.SuggestedQueries, sq.Query)
+	}
+	for _, p := range detail.Primers {
+		space.Primers = append(space.Primers, models.Primer{
+			PrimerType: p.PrimerType,
+			Queries:    p.Queries,
+		})
+	}
+
+	return nil
+}
+
+// enrichSpaceSkills populates a space with its collection-scoped skills,
+// including each skill's SKILL.md body. Per-skill failures are logged and
+// skipped so one bad skill does not drop the others.
+//
+// Only skills with scope=="collection" (space-specific) are exported. Global
+// skills available to the space are intentionally excluded for now; see the
+// follow-up noted in TODO.md.
+func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) error {
+	summaries, err := ListSpaceSkills(ctx, c, space.UUID)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range summaries {
+		if s.Scope != "collection" {
+			continue
+		}
+
+		skill := models.Skill{
+			ID:          s.ID,
+			Name:        s.Name,
+			Description: s.Description,
+			Scope:       s.Scope,
+		}
+
+		// Fetch full detail (metadata + pre-signed body URL).
+		detail, err := GetSkillDetail(ctx, c, s.ID)
+		if err != nil {
+			if isCancellation(err) {
+				return err
+			}
+			log.Printf("warning: could not fetch detail for skill %q in space %q: %v", s.Name, space.Name, err)
+			space.Skills = append(space.Skills, skill)
+			continue
+		}
+
+		skill.Categories = detail.Skill.Categories
+		skill.Tags = detail.Skill.Tags
+		skill.CreatedAt = detail.Skill.CreatedAt
+		skill.UpdatedAt = detail.Skill.UpdatedAt
+
+		// Download the SKILL.md body now — the URL is short-lived (~15 min).
+		if detail.Skill.FileURL != "" {
+			body, err := c.GetRawURL(ctx, detail.Skill.FileURL)
+			if err != nil {
+				if isCancellation(err) {
+					return err
+				}
+				log.Printf("warning: could not download body for skill %q in space %q: %v", s.Name, space.Name, err)
+			} else {
+				skill.Body = string(body)
+			}
+		}
+
+		space.Skills = append(space.Skills, skill)
+	}
+
+	return nil
 }
