@@ -122,3 +122,46 @@ func TestMarkdownExportSpacesWithSkills(t *testing.T) {
 		t.Errorf("unexpected sidecar for body-less skill (err=%v)", err)
 	}
 }
+
+func TestBlockquoteMultiline(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"single line", "hello", "> hello\n"},
+		{"two lines", "line one\nline two", "> line one\n> line two\n"},
+		{"blank line between", "a\n\nb", "> a\n>\n> b\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := blockquote(tc.in); got != tc.want {
+				t.Errorf("blockquote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMarkdownExportSpacesMultilineInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+	exp := &MarkdownExporter{OutputDir: tmpDir}
+
+	spaces := []models.Space{{
+		UUID:         "space-1",
+		Name:         "Recipes",
+		Instructions: "First line.\nSecond line.",
+	}}
+	if err := exp.ExportSpaces(context.Background(), spaces, nil); err != nil {
+		t.Fatalf("ExportSpaces: %v", err)
+	}
+
+	overview, err := os.ReadFile(filepath.Join(tmpDir, "spaces", "spaces.md"))
+	if err != nil {
+		t.Fatalf("read spaces.md: %v", err)
+	}
+	content := string(overview)
+	// Every instruction line must be individually blockquoted.
+	if !strings.Contains(content, "> First line.\n> Second line.\n") {
+		t.Errorf("multiline instructions not blockquoted per line\n%s", content)
+	}
+}

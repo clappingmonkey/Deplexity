@@ -48,8 +48,6 @@ func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, err
 		return nil, fmt.Errorf("failed to list spaces: %w", err)
 	}
 
-	var spaces []models.Space
-
 	// Combine all space categories into a single list.
 	allItems := make([]SpaceItem, 0)
 	allItems = append(allItems, raw.PrivateSpaces...)
@@ -58,7 +56,24 @@ func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, err
 	allItems = append(allItems, raw.SavedSpaces...)
 	allItems = append(allItems, raw.OrganizationSpaces...)
 
-	for _, item := range allItems {
+	return enrichSpaces(ctx, c, allItems)
+}
+
+// enrichSpaces converts raw space list items into domain models and enriches
+// each with per-space detail and collection-scoped skills.
+//
+// Enrichment is best-effort: a failure to enrich one space (or one of its
+// skills) is logged and skipped rather than aborting the whole export, so a
+// single broken space never loses the rest of the data. Context cancellation
+// is the sole exception — it aborts immediately and propagates the error so an
+// interrupted export is not mistaken for a partial success.
+//
+// It is separated from ListCollections so the fail-soft/cancellation contract
+// can be exercised against a mock enricher without a live client.
+func enrichSpaces(ctx context.Context, c enricher, items []SpaceItem) ([]models.Space, error) {
+	var spaces []models.Space
+
+	for _, item := range items {
 		space := models.Space{
 			UUID:      item.UUID,
 			Name:      item.Title,
@@ -161,6 +176,11 @@ func GetSkillDetail(ctx context.Context, c getter, skillID string) (*SkillDetail
 
 // enrichSpaceDetail populates a space with detail from get_collection.
 func enrichSpaceDetail(ctx context.Context, c getter, space *models.Space) error {
+	// get_collection is keyed by slug; without one there is nothing to fetch.
+	if space.Slug == "" {
+		return nil
+	}
+
 	detail, err := GetCollection(ctx, c, space.Slug)
 	if err != nil {
 		return err
@@ -200,6 +220,12 @@ func enrichSpaceDetail(ctx context.Context, c getter, space *models.Space) error
 // skills available to the space are intentionally excluded for now; see the
 // follow-up noted in TODO.md.
 func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) error {
+	// skills/selectable is keyed by collection UUID; without one there is
+	// nothing to fetch.
+	if space.UUID == "" {
+		return nil
+	}
+
 	summaries, err := ListSpaceSkills(ctx, c, space.UUID)
 	if err != nil {
 		return err

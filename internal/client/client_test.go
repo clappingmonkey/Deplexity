@@ -86,7 +86,8 @@ func TestClientGetContextCancellation(t *testing.T) {
 
 func TestGetRawURLIsolatesHeaders(t *testing.T) {
 	var got http.Header
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// A TLS server so the URL is https, which GetRawURL requires.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("skill body"))
@@ -119,6 +120,44 @@ func TestGetRawURLIsolatesHeaders(t *testing.T) {
 	// User-Agent is still sent (benign, needed by some CDNs).
 	if got.Get("User-Agent") == "" {
 		t.Error("GetRawURL should still send a User-Agent")
+	}
+}
+
+func TestGetRawURLRejectsNonHTTPS(t *testing.T) {
+	var reached bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: "https://www.perplexity.ai", delay: 0}
+
+	// srv.URL is an http:// URL; other schemes and hostless URLs are also
+	// refused. None of these should ever hit the network.
+	cases := []string{srv.URL + "/skill.md", "file:///etc/passwd", "https:///no-host"}
+	for _, raw := range cases {
+		if _, err := c.GetRawURL(context.Background(), raw); err == nil {
+			t.Errorf("GetRawURL(%q) = nil error, want rejection", raw)
+		}
+	}
+	if reached {
+		t.Error("GetRawURL issued a request for a rejected URL")
+	}
+}
+
+func TestGetRawURLRejectsOversizedBody(t *testing.T) {
+	// Serve one byte more than the cap; GetRawURL must error, not truncate.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(make([]byte, maxRawURLBody+1))
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: "https://www.perplexity.ai", delay: 0}
+
+	if _, err := c.GetRawURL(context.Background(), srv.URL+"/big.md"); err == nil {
+		t.Fatal("GetRawURL accepted an oversized body, want error")
 	}
 }
 

@@ -109,7 +109,9 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 			sb.WriteString(fmt.Sprintf("%s\n\n", space.Description))
 		}
 		if space.Instructions != "" {
-			sb.WriteString(fmt.Sprintf("**AI Instructions:**\n\n> %s\n\n", space.Instructions))
+			sb.WriteString("**AI Instructions:**\n\n")
+			sb.WriteString(blockquote(space.Instructions))
+			sb.WriteString("\n")
 		}
 		sb.WriteString(fmt.Sprintf("- **UUID:** %s\n", space.UUID))
 		if space.CreatedAt != nil {
@@ -248,4 +250,21 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 // threadDir returns the output directory for a thread.
 func (e *MarkdownExporter) threadDir(thread *models.Thread) string {
 	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+}
+
+// blockquote renders text as a Markdown blockquote, prefixing every line with
+// "> " so multi-line instructions render correctly instead of collapsing into
+// a single quoted line. The result ends with a trailing newline.
+func blockquote(text string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			sb.WriteString(">\n")
+			continue
+		}
+		sb.WriteString("> ")
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

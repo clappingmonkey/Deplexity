@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -295,6 +296,22 @@ const maxRawURLBody = 10 << 20 // 10 MB
 // failure (ErrNotAuthenticated): the target is a third-party URL, so such a
 // status typically means the pre-signed URL has expired.
 func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
+	// Validate the target before issuing any request. The URL originates from
+	// the (authenticated) Perplexity API, but we still refuse anything that is
+	// not an absolute https URL with a host: skill bodies are always fetched
+	// from https pre-signed storage URLs, so a different scheme (http, file,
+	// etc.) or a missing host indicates a malformed or hostile value rather
+	// than a legitimate SKILL.md location. This is deliberately a lightweight
+	// check, not full SSRF hardening (no private-IP or redirect validation),
+	// which is out of scope for a personal export CLI fetching first-party URLs.
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL %q: %w", rawURL, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return nil, fmt.Errorf("refusing to fetch non-https or hostless URL %q", rawURL)
+	}
+
 	httpAttempt := 0
 	netAttempt := 0
 
@@ -364,10 +381,15 @@ func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
 			}
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxRawURLBody))
+		// Read one byte past the cap so an oversized body is detected as an
+		// explicit error rather than silently truncated into a corrupt skill.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxRawURLBody+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("could not read response from %s: %w", rawURL, err)
+		}
+		if len(body) > maxRawURLBody {
+			return nil, fmt.Errorf("response from %s exceeds %d byte cap", rawURL, maxRawURLBody)
 		}
 
 		if resp.StatusCode != http.StatusOK {

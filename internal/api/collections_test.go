@@ -326,3 +326,111 @@ func TestEnrichSpaceSkillsPropagatesCancellation(t *testing.T) {
 		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
 }
+
+func TestEnrichSpaceDetailSkipsEmptySlug(t *testing.T) {
+	m := &mockEnricher{} // no canned responses: any Get would error
+	space := &models.Space{UUID: "u1", Name: "Recipes"} // Slug == ""
+
+	if err := enrichSpaceDetail(context.Background(), m, space); err != nil {
+		t.Fatalf("enrichSpaceDetail with empty slug = %v, want nil (skip)", err)
+	}
+	if len(m.paths) != 0 {
+		t.Errorf("issued %d requests for a slugless space, want 0", len(m.paths))
+	}
+}
+
+func TestEnrichSpaceSkillsSkipsEmptyUUID(t *testing.T) {
+	m := &mockEnricher{} // no canned responses: any Get would error
+	space := &models.Space{Slug: "recipes", Name: "Recipes"} // UUID == ""
+
+	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+		t.Fatalf("enrichSpaceSkills with empty uuid = %v, want nil (skip)", err)
+	}
+	if len(m.paths) != 0 {
+		t.Errorf("issued %d requests for a uuidless space, want 0", len(m.paths))
+	}
+	if len(space.Skills) != 0 {
+		t.Errorf("got %d skills for a uuidless space, want 0", len(space.Skills))
+	}
+}
+
+func TestEnrichSpaceSkillsEmptyFileURLSkipsBodyFetch(t *testing.T) {
+	// A skill whose detail carries no file_url is exported as metadata only,
+	// and no body download is attempted.
+	selectable := `{"skills":[
+		{"id":"skill-collection","name":"git-commit","scope":"collection"}
+	],"next_cursor":null}`
+	detail := `{"skill":{"id":"skill-collection","name":"git-commit","scope":"collection","file_url":""}}`
+	m := &mockEnricher{
+		responses: map[string]string{
+			"selectable":              selectable,
+			"skills/skill-collection": detail,
+		},
+	}
+
+	space := &models.Space{UUID: "u1", Name: "Recipes"}
+	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+		t.Fatalf("enrichSpaceSkills: %v", err)
+	}
+	if len(space.Skills) != 1 {
+		t.Fatalf("got %d skills, want 1", len(space.Skills))
+	}
+	if space.Skills[0].Body != "" {
+		t.Errorf("body = %q, want empty (no file_url)", space.Skills[0].Body)
+	}
+	if len(m.rawURLs) != 0 {
+		t.Errorf("attempted %d raw fetches, want 0 (empty file_url)", len(m.rawURLs))
+	}
+}
+
+func TestEnrichSpacesFailSoftAcrossSpaces(t *testing.T) {
+	// Three spaces: the first has a failing detail fetch, the second a failing
+	// skills fetch, the third succeeds. All three must still be returned and
+	// the call must not error (fail-soft).
+	m := &mockEnricher{
+		responses: map[string]string{
+			"get_collection": `{"instructions":"ok"}`,
+			"selectable":     `{"skills":[],"next_cursor":null}`,
+		},
+		getErrs: map[string]error{
+			// Path substrings are matched before responses; scope the failures
+			// narrowly so only the intended space/endpoint is affected.
+			"collection_slug=bad-detail": errors.New("500 detail"),
+		},
+	}
+
+	items := []SpaceItem{
+		{UUID: "u1", Title: "BadDetail", Slug: "bad-detail"},
+		{UUID: "u2", Title: "Good", Slug: "good-slug"},
+	}
+
+	spaces, err := enrichSpaces(context.Background(), m, items)
+	if err != nil {
+		t.Fatalf("enrichSpaces should be fail-soft, got: %v", err)
+	}
+	if len(spaces) != 2 {
+		t.Fatalf("got %d spaces, want 2 (all retained despite one failure)", len(spaces))
+	}
+	// The failing-detail space still carries its list metadata.
+	if spaces[0].Name != "BadDetail" || spaces[0].Instructions != "" {
+		t.Errorf("space[0] = %+v, want metadata retained without instructions", spaces[0])
+	}
+	// The healthy space was enriched.
+	if spaces[1].Instructions != "ok" {
+		t.Errorf("space[1].Instructions = %q, want enriched", spaces[1].Instructions)
+	}
+}
+
+func TestEnrichSpacesPropagatesCancellation(t *testing.T) {
+	// A cancellation surfacing from any space must abort the whole loop.
+	m := &mockEnricher{
+		getErrs: map[string]error{"get_collection": context.Canceled},
+	}
+	items := []SpaceItem{{UUID: "u1", Title: "Recipes", Slug: "recipes"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := enrichSpaces(ctx, m, items); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled to propagate", err)
+	}
+}
