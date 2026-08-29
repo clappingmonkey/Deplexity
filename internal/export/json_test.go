@@ -84,7 +84,10 @@ func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 		t.Fatalf("ExportSpaces: %v", err)
 	}
 
-	spaceDir := filepath.Join(dir, "spaces", "Recipes")
+	// The exporter sanitizes (and lowercases) the space name for the folder,
+	// so derive the expected path the same way rather than hardcoding "Recipes"
+	// (which passes on case-insensitive macOS but fails on case-sensitive Linux).
+	spaceDir := filepath.Join(dir, "spaces", sanitizeFilename(space.Name))
 
 	// The skill body file must exist with the fetched content.
 	bodyPath := filepath.Join(spaceDir, "skills", "git-commit.md")
@@ -116,7 +119,8 @@ func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 	if len(written.Skills) != 2 {
 		t.Fatalf("got %d skills in space.json, want 2", len(written.Skills))
 	}
-	if written.Skills[0].BodyFile != filepath.Join("skills", "git-commit.md") {
+	// BodyFile always uses forward slashes so it is portable inside JSON.
+	if written.Skills[0].BodyFile != "skills/git-commit.md" {
 		t.Errorf("BodyFile = %q, want skills/git-commit.md", written.Skills[0].BodyFile)
 	}
 	if written.Skills[1].BodyFile != "" {
