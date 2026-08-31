@@ -127,6 +127,11 @@ deplexity-export/
 ├── thread_index.json          # Cached thread list (for resumable exports)
 ├── profile/
 │   └── user.json
+├── account/                   # Account-wide data (not tied to any space)
+│   ├── account.json           # Global skills metadata (referenced bodies below)
+│   ├── global-skills.md       # Global skills overview (Markdown)
+│   └── skills/                # Global skills' SKILL.md bodies
+│       └── <skill-name>.md
 ├── spaces/
 │   ├── index.json
 │   ├── spaces.md
@@ -151,6 +156,8 @@ deplexity-export/
 Each space folder is self-contained — you can ZIP and share a single space without needing the top-level `threads/` directory.
 
 Space exports capture each space's full context: its custom AI instructions, description, suggested queries, primers, and any attached skills. Skill definitions are written as `SKILL.md` files under `spaces/<space-name>/skills/` and referenced from `space.json`.
+
+Account-wide **global skills** apply to every request regardless of space, so they are exported once under `account/` rather than duplicated per space. They are captured when spaces are exported (skip them with `--no-spaces`) and are written to JSON and Markdown outputs (`account/account.json`, `account/global-skills.md`, and bodies under `account/skills/`); PDF-only exports do not include them.
 
 ---
 
