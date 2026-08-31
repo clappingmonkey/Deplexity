@@ -107,6 +107,18 @@ type Skill struct {
 	Body string `json:"-"`
 }
 
+// Account holds account-wide data that applies across all spaces and requests,
+// as opposed to Space-scoped configuration. It is a container so future
+// account-wide resources (settings, connectors, rate limits) can be added
+// without reshaping the export surface.
+type Account struct {
+	// GlobalSkills are account-wide skills (scope == "global") applied to every
+	// request regardless of space, unlike Space.Skills which are collection
+	// scoped. Bodies are fetched during listing and written to sidecar files by
+	// the exporters; they are not embedded in JSON.
+	GlobalSkills []Skill `json:"global_skills,omitempty"`
+}
+
 // ExportManifest holds metadata about an export run.
 type ExportManifest struct {
 	Version     string            `json:"version"`
@@ -118,10 +130,11 @@ type ExportManifest struct {
 
 // ExportCounts holds the number of each item type exported.
 type ExportCounts struct {
-	Threads   int `json:"threads"`
-	Spaces    int `json:"spaces"`
-	Bookmarks int `json:"bookmarks"`
-	Sources   int `json:"sources"`
+	Threads      int `json:"threads"`
+	Spaces       int `json:"spaces"`
+	Bookmarks    int `json:"bookmarks"`
+	Sources      int `json:"sources"`
+	GlobalSkills int `json:"global_skills"`
 }
 
 // ThreadIndex holds the cached list of thread UUIDs for resumable export.

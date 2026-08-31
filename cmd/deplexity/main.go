@@ -167,9 +167,31 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		fmt.Printf(" %s\n", user.Email)
 	}
 
+	// === Account (global skills) ===
+	// Global skills are account-wide and apply to every request regardless of
+	// space, so they are fetched once here rather than attached per space.
+	// They are skill configuration like space skills, so --no-spaces suppresses
+	// them too, keeping that flag's "skip skill fetching" intent intact.
+	var account *models.Account
+	if cmd.Spaces {
+		fmt.Print("Fetching global skills...")
+		account, err = api.GetAccount(ctx, c)
+		if err != nil {
+			// Cancellation must abort the whole export; other errors are a
+			// skipped section, matching how spaces are handled above.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, " skipped (%v)\n", err)
+			account = nil
+		} else {
+			fmt.Printf(" %d global skills found\n", len(account.GlobalSkills))
+		}
+	}
+
 	// === Phase 3: Format export ===
 	for _, format := range cmd.Format {
-		if err := cmd.exportFormat(ctx, format, threads, spaces, user); err != nil {
+		if err := cmd.exportFormat(ctx, format, threads, spaces, user, account); err != nil {
 			return fmt.Errorf("export %s failed: %w", format, err)
 		}
 	}
@@ -184,6 +206,9 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 			Spaces:  len(spaces),
 		},
 		ThreadIndex: make(map[string]string),
+	}
+	if account != nil {
+		manifest.Counts.GlobalSkills = len(account.GlobalSkills)
 	}
 	for _, t := range threads {
 		manifest.ThreadIndex[t.UUID] = t.Slug
@@ -419,7 +444,7 @@ func attachPreviousUpdatedAt(refs []models.ThreadRef, previous []models.ThreadRe
 	}
 }
 
-func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads []models.Thread, spaces []models.Space, user *models.User) error {
+func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads []models.Thread, spaces []models.Space, user *models.User, account *models.Account) error {
 	total := len(threads)
 
 	switch format {
@@ -439,6 +464,11 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 		}
 		if user != nil {
 			if err := exp.ExportUser(user); err != nil {
+				return err
+			}
+		}
+		if account != nil {
+			if err := exp.ExportAccount(account); err != nil {
 				return err
 			}
 		}
@@ -471,6 +501,11 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 		}
 		if user != nil {
 			if err := exp.ExportUser(user); err != nil {
+				return err
+			}
+		}
+		if account != nil {
+			if err := exp.ExportAccount(account); err != nil {
 				return err
 			}
 		}

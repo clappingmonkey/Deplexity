@@ -4,6 +4,7 @@ go_library(
     name = "api",
     srcs = [
         "collections.go",
+        "skills.go",
         "threads.go",
         "types.go",
         "user.go",
@@ -20,6 +21,7 @@ go_test(
     name = "api_test",
     srcs = [
         "collections_test.go",
+        "skills_test.go",
         "threads_test.go",
         "user_test.go",
     ],

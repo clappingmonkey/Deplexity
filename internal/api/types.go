@@ -114,8 +114,10 @@ type Primer struct {
 //
 // Space-attached skills are fetched via /rest/skills/selectable filtered by
 // collection_uuid. Space-specific skills carry scope=="collection"; global
-// skills carry scope=="global". Full skill detail (including a pre-signed S3
-// file_url for the SKILL.md body) comes from /rest/skills/{id}.
+// (account-wide) skills carry scope=="global". Omitting collection_uuid from
+// the same endpoint returns only the global skills, which are exported once at
+// the account level rather than per space. Full skill detail (including a
+// pre-signed S3 file_url for the SKILL.md body) comes from /rest/skills/{id}.
 
 // SkillsSelectableResponse is the shape of GET /rest/skills/selectable.
 type SkillsSelectableResponse struct {

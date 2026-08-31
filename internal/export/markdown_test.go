@@ -165,3 +165,82 @@ func TestMarkdownExportSpacesMultilineInstructions(t *testing.T) {
 		t.Errorf("multiline instructions not blockquoted per line\n%s", content)
 	}
 }
+
+func TestMarkdownExportAccountWritesGlobalSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+	exp := &MarkdownExporter{OutputDir: tmpDir}
+
+	account := &models.Account{
+		GlobalSkills: []models.Skill{
+			// Body-backed skill: gets a sidecar file and a link.
+			{ID: "g1", Name: "create-skill", Description: "Create skills", Body: "# create-skill\nbody"},
+			// Metadata-only skill: rendered inline, no link, no file.
+			{ID: "g2", Name: "no-body", Description: "No body here"},
+		},
+	}
+
+	if err := exp.ExportAccount(account); err != nil {
+		t.Fatalf("ExportAccount: %v", err)
+	}
+
+	overview, err := os.ReadFile(filepath.Join(tmpDir, "account", "global-skills.md"))
+	if err != nil {
+		t.Fatalf("read global-skills.md: %v", err)
+	}
+	content := string(overview)
+
+	// Link uses forward slashes and the collision-free filename, relative to
+	// global-skills.md (which lives in account/).
+	wantLink := "[create-skill](skills/create-skill.md)"
+	if !strings.Contains(content, wantLink) {
+		t.Errorf("global-skills.md missing skill link %q\n%s", wantLink, content)
+	}
+	// Metadata-only skill is present but not linked.
+	if !strings.Contains(content, "- no-body — No body here") {
+		t.Errorf("global-skills.md missing metadata-only skill line\n%s", content)
+	}
+	if strings.Contains(content, "no-body.md") {
+		t.Errorf("global-skills.md should not link a body-less skill\n%s", content)
+	}
+
+	// The body sidecar exists under account/skills/.
+	body, err := os.ReadFile(filepath.Join(tmpDir, "account", "skills", "create-skill.md"))
+	if err != nil {
+		t.Fatalf("read skill body: %v", err)
+	}
+	if string(body) != "# create-skill\nbody" {
+		t.Errorf("skill body = %q, want fetched SKILL.md", string(body))
+	}
+
+	// The body-less skill must not produce a sidecar file.
+	if _, err := os.Stat(filepath.Join(tmpDir, "account", "skills", "no-body.md")); !os.IsNotExist(err) {
+		t.Errorf("unexpected sidecar for body-less skill (err=%v)", err)
+	}
+}
+
+func TestMarkdownExportAccountEmptyAndNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	exp := &MarkdownExporter{OutputDir: tmpDir}
+
+	// Empty global-skills set still writes the overview with a placeholder.
+	if err := exp.ExportAccount(&models.Account{}); err != nil {
+		t.Fatalf("ExportAccount(empty): %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "account", "global-skills.md"))
+	if err != nil {
+		t.Fatalf("read global-skills.md: %v", err)
+	}
+	if !strings.Contains(string(content), "_No global skills._") {
+		t.Errorf("empty account missing placeholder\n%s", content)
+	}
+
+	// Nil account is a no-op: it must not create the account dir.
+	tmpDir2 := t.TempDir()
+	exp2 := &MarkdownExporter{OutputDir: tmpDir2}
+	if err := exp2.ExportAccount(nil); err != nil {
+		t.Fatalf("ExportAccount(nil): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir2, "account")); !os.IsNotExist(err) {
+		t.Errorf("nil account created an account dir (err=%v)", err)
+	}
+}

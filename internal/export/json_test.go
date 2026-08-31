@@ -169,3 +169,79 @@ func TestWriteJSONFailedWriteLeavesExistingFileIntact(t *testing.T) {
 		}
 	}
 }
+
+func TestExportAccountWritesGlobalSkills(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+
+	account := &models.Account{
+		GlobalSkills: []models.Skill{
+			{
+				ID:    "g1",
+				Name:  "create-skill",
+				Scope: "global",
+				Body:  "---\nname: create-skill\n---\nGlobal body",
+			},
+			{
+				ID:    "g2",
+				Name:  "no-body-skill",
+				Scope: "global",
+				// No Body — metadata only, must not produce a file.
+			},
+		},
+	}
+
+	if err := exporter.ExportAccount(account); err != nil {
+		t.Fatalf("ExportAccount: %v", err)
+	}
+
+	accountDir := filepath.Join(dir, "account")
+
+	// The skill body file must exist under account/skills/.
+	body, err := os.ReadFile(filepath.Join(accountDir, "skills", "create-skill.md"))
+	if err != nil {
+		t.Fatalf("read skill body: %v", err)
+	}
+	if !strings.Contains(string(body), "Global body") {
+		t.Errorf("skill body = %q, want fetched SKILL.md", string(body))
+	}
+
+	// The body-less skill must not create a file.
+	if _, err := os.Stat(filepath.Join(accountDir, "skills", "no-body-skill.md")); !os.IsNotExist(err) {
+		t.Errorf("body-less skill produced a file, want none (err=%v)", err)
+	}
+
+	// account.json must carry skills metadata with body_file set on the one
+	// that has a body, and must not leak the body content.
+	raw, err := os.ReadFile(filepath.Join(accountDir, "account.json"))
+	if err != nil {
+		t.Fatalf("read account.json: %v", err)
+	}
+	var written models.Account
+	if err := json.Unmarshal(raw, &written); err != nil {
+		t.Fatalf("unmarshal account.json: %v", err)
+	}
+	if len(written.GlobalSkills) != 2 {
+		t.Fatalf("got %d global skills, want 2", len(written.GlobalSkills))
+	}
+	if written.GlobalSkills[0].BodyFile != "skills/create-skill.md" {
+		t.Errorf("BodyFile = %q, want skills/create-skill.md", written.GlobalSkills[0].BodyFile)
+	}
+	if written.GlobalSkills[1].BodyFile != "" {
+		t.Errorf("body-less skill BodyFile = %q, want empty", written.GlobalSkills[1].BodyFile)
+	}
+	if strings.Contains(string(raw), "Global body") {
+		t.Error("account.json leaked the skill body; Body should be json:\"-\"")
+	}
+}
+
+func TestExportAccountNilIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	if err := exporter.ExportAccount(nil); err != nil {
+		t.Fatalf("ExportAccount(nil): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "account")); !os.IsNotExist(err) {
+		t.Errorf("nil account created an account dir (err=%v)", err)
+	}
+}
