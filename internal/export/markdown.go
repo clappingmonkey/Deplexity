@@ -201,8 +201,10 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 }
 
 // writeSpaceSkillBodies writes each skill's SKILL.md body into a skills/
-// subfolder of the space directory. Skills without a fetched body are skipped.
-func writeSpaceSkillBodies(spaceDir string, skills []models.Skill) error {
+// subfolder of baseDir (a space or the account directory). Skills without a
+// fetched body are skipped. Filenames are collision-free across the slice and
+// agree with the links written by the caller.
+func writeSpaceSkillBodies(baseDir string, skills []models.Skill) error {
 	filenames := skillFilenames(skills)
 	var skillsDir string
 	for i := range skills {
@@ -210,7 +212,7 @@ func writeSpaceSkillBodies(spaceDir string, skills []models.Skill) error {
 			continue
 		}
 		if skillsDir == "" {
-			skillsDir = filepath.Join(spaceDir, "skills")
+			skillsDir = filepath.Join(baseDir, "skills")
 			if err := os.MkdirAll(skillsDir, 0755); err != nil {
 				return fmt.Errorf("could not create skills directory: %w", err)
 			}
@@ -244,6 +246,56 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 		return fmt.Errorf("could not write profile markdown: %w", err)
 	}
 
+	return nil
+}
+
+// ExportAccount writes account-wide data (currently global skills) as Markdown.
+//
+// Global skills apply to every request regardless of space, so they are written
+// once under account/ rather than per space. Bodies go to account/skills/ and
+// account/global-skills.md links to them.
+func (e *MarkdownExporter) ExportAccount(account *models.Account) error {
+	if account == nil {
+		return nil
+	}
+	dir := filepath.Join(e.OutputDir, "account")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("could not create account directory: %w", err)
+	}
+
+	// Write skill bodies first so the links below point at real files.
+	if err := writeSpaceSkillBodies(dir, account.GlobalSkills); err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Global Skills\n\n")
+	sb.WriteString("Account-wide skills applied to every request, regardless of space.\n\n")
+
+	if len(account.GlobalSkills) == 0 {
+		sb.WriteString("_No global skills._\n")
+	} else {
+		filenames := skillFilenames(account.GlobalSkills)
+		for i, sk := range account.GlobalSkills {
+			if sk.Body != "" {
+				// Link relative to global-skills.md, which lives in the account
+				// dir. path.Join keeps forward slashes for portable Markdown.
+				link := path.Join("skills", filenames[i])
+				sb.WriteString(fmt.Sprintf("- [%s](%s)", sk.Name, link))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s", sk.Name))
+			}
+			if sk.Description != "" {
+				sb.WriteString(fmt.Sprintf(" — %s", sk.Description))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	out := filepath.Join(dir, "global-skills.md")
+	if err := os.WriteFile(out, []byte(sb.String()), 0644); err != nil {
+		return fmt.Errorf("could not write global skills markdown: %w", err)
+	}
 	return nil
 }
 

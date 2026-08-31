@@ -123,6 +123,10 @@ func GetCollection(ctx context.Context, c getter, slug string) (*CollectionDetai
 // ListSpaceSkills fetches the skills selectable within a space via
 // GET /rest/skills/selectable?collection_uuid={uuid}, following next_cursor
 // pagination so that spaces with many skills are fully captured.
+//
+// When collectionUUID is empty the collection_uuid parameter is omitted, which
+// the API interprets as "list account-wide skills": the response then carries
+// only scope=="global" skills. ListGlobalSkills relies on this behaviour.
 func ListSpaceSkills(ctx context.Context, c getter, collectionUUID string) ([]SkillSummary, error) {
 	var all []SkillSummary
 	cursor := ""
@@ -132,9 +136,12 @@ func ListSpaceSkills(ctx context.Context, c getter, collectionUUID string) ([]Sk
 
 	for {
 		path := fmt.Sprintf(
-			"/rest/skills/selectable?collection_uuid=%s&version=%s&source=default",
-			url.QueryEscape(collectionUUID), apiVersion,
+			"/rest/skills/selectable?version=%s&source=default",
+			apiVersion,
 		)
+		if collectionUUID != "" {
+			path += "&collection_uuid=" + url.QueryEscape(collectionUUID)
+		}
 		if cursor != "" {
 			path += "&cursor=" + url.QueryEscape(cursor)
 		}
@@ -150,7 +157,11 @@ func ListSpaceSkills(ctx context.Context, c getter, collectionUUID string) ([]Sk
 		}
 		if seenCursors[*resp.NextCursor] {
 			// The cursor is repeating; stop rather than loop forever.
-			log.Printf("warning: skills pagination cursor repeated for space %s; stopping", collectionUUID)
+			owner := collectionUUID
+			if owner == "" {
+				owner = "global"
+			}
+			log.Printf("warning: skills pagination cursor repeated for %s; stopping", owner)
 			break
 		}
 		seenCursors[*resp.NextCursor] = true
@@ -216,9 +227,10 @@ func enrichSpaceDetail(ctx context.Context, c getter, space *models.Space) error
 // including each skill's SKILL.md body. Per-skill failures are logged and
 // skipped so one bad skill does not drop the others.
 //
-// Only skills with scope=="collection" (space-specific) are exported. Global
-// skills available to the space are intentionally excluded for now; see the
-// follow-up noted in TODO.md.
+// Only skills with scope=="collection" (space-specific) are attached to a
+// space. Account-wide skills (scope=="global") apply to every request
+// regardless of space and are exported once at the account level via
+// GetAccount/ListGlobalSkills, so they are deliberately skipped here.
 func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) error {
 	// skills/selectable is keyed by collection UUID; without one there is
 	// nothing to fetch.
@@ -236,40 +248,11 @@ func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) err
 			continue
 		}
 
-		skill := models.Skill{
-			ID:          s.ID,
-			Name:        s.Name,
-			Description: s.Description,
-			Scope:       s.Scope,
-		}
-
-		// Fetch full detail (metadata + pre-signed body URL).
-		detail, err := GetSkillDetail(ctx, c, s.ID)
+		skill, err := enrichSkill(ctx, c, s, fmt.Sprintf("space %q", space.Name))
 		if err != nil {
-			if isCancellation(err) {
-				return err
-			}
-			log.Printf("warning: could not fetch detail for skill %q in space %q: %v", s.Name, space.Name, err)
-			space.Skills = append(space.Skills, skill)
-			continue
-		}
-
-		skill.Categories = detail.Skill.Categories
-		skill.Tags = detail.Skill.Tags
-		skill.CreatedAt = detail.Skill.CreatedAt
-		skill.UpdatedAt = detail.Skill.UpdatedAt
-
-		// Download the SKILL.md body now — the URL is short-lived (~15 min).
-		if detail.Skill.FileURL != "" {
-			body, err := c.GetRawURL(ctx, detail.Skill.FileURL)
-			if err != nil {
-				if isCancellation(err) {
-					return err
-				}
-				log.Printf("warning: could not download body for skill %q in space %q: %v", s.Name, space.Name, err)
-			} else {
-				skill.Body = string(body)
-			}
+			// Only cancellation is returned; other failures degrade to
+			// metadata-only and are already logged.
+			return err
 		}
 
 		space.Skills = append(space.Skills, skill)

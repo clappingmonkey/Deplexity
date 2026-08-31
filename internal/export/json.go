@@ -213,6 +213,30 @@ func (e *JSONExporter) ExportUser(user *models.User) error {
 	return writeJSON(filepath.Join(dir, "user.json"), user)
 }
 
+// ExportAccount writes account-wide data (currently global skills).
+//
+// Global skills apply to every request regardless of space, so they are written
+// once under account/ rather than duplicated into each space. Each skill's
+// SKILL.md body is written to account/skills/<name>.md and referenced from
+// account/account.json via body_file.
+func (e *JSONExporter) ExportAccount(account *models.Account) error {
+	if account == nil {
+		return nil
+	}
+	dir := filepath.Join(e.OutputDir, "account")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("could not create account directory: %w", err)
+	}
+
+	// Write skill bodies as sidecar files and record their relative paths
+	// before serializing account.json so body_file is populated.
+	if err := writeSkillBodiesJSON(dir, account.GlobalSkills); err != nil {
+		return err
+	}
+
+	return writeJSON(filepath.Join(dir, "account.json"), account)
+}
+
 // ExportManifest writes the export manifest.
 func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
 	return writeJSON(filepath.Join(e.OutputDir, "manifest.json"), manifest)
@@ -228,6 +252,15 @@ func (e *JSONExporter) threadDir(thread *models.Thread) string {
 // space.json references it. Skills without a fetched body are left as
 // metadata-only. It mutates the BodyFile field of each skill in place.
 func (e *JSONExporter) writeSpaceSkills(spaceDir string, skills []models.Skill) error {
+	return writeSkillBodiesJSON(spaceDir, skills)
+}
+
+// writeSkillBodiesJSON writes each skill's SKILL.md body into a skills/
+// subfolder of baseDir and records the relative path (skills/<name>.md) on the
+// skill's BodyFile so the sibling JSON references it. Skills without a fetched
+// body are left metadata-only. Filenames are collision-free across the slice.
+// It mutates the BodyFile field of each skill in place.
+func writeSkillBodiesJSON(baseDir string, skills []models.Skill) error {
 	filenames := skillFilenames(skills)
 	var skillsDir string
 	for i := range skills {
@@ -235,7 +268,7 @@ func (e *JSONExporter) writeSpaceSkills(spaceDir string, skills []models.Skill) 
 			continue
 		}
 		if skillsDir == "" {
-			skillsDir = filepath.Join(spaceDir, "skills")
+			skillsDir = filepath.Join(baseDir, "skills")
 			if err := os.MkdirAll(skillsDir, 0755); err != nil {
 				return fmt.Errorf("could not create skills directory: %w", err)
 			}

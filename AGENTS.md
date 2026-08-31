@@ -33,7 +33,8 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 
 - `internal/api/types.go` — **raw API response structs** (JSON tags match Perplexity's undocumented internal API, verified against live responses May 2026, API v2.18).
 - `internal/api/threads.go` — `ListThreads`, `ListThreadsFrom` (POST `list_ask_threads` with pagination, dual stop condition), `GetThread`.
-- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`, then always-on fail-soft enrichment: `GetCollection` (per-space instructions/description/suggested_queries/primers) and `ListSpaceSkills`/`GetSkillDetail` (collection-scoped skills + SKILL.md body).
+- `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`, then always-on fail-soft enrichment: `GetCollection` (per-space instructions/description/suggested_queries/primers) and `ListSpaceSkills`/`GetSkillDetail` (collection-scoped skills + SKILL.md body). `ListSpaceSkills` omits `collection_uuid` when the UUID is empty (used to list account-wide global skills).
+- `internal/api/skills.go` — account-wide skills. `enrichSkill` (shared fail-soft helper: fetches detail + downloads SKILL.md body, used by both space and global paths), `ListGlobalSkills` (calls `ListSpaceSkills("")`, keeps only `scope=="global"`), and `GetAccount` (wraps global skills in `models.Account`). Global skills apply to every request account-wide, so they are exported **once** at the top level, not per space.
 - `internal/api/user.go` — `GetUser` via `GET /api/user`.
 - `internal/models/models.go` — clean domain models used throughout the app (decoupled from API shape).
 - `internal/auth/` — browser-based login via `go-rod/rod` (visible Chrome), cookie capture, session persistence. Also supports `--cookie` for manual token auth.
@@ -68,6 +69,7 @@ All endpoints are reverse-engineered from browser DevTools (May 2026, API versio
 | GET | `/rest/spaces` | All spaces (private/shared/invited/org/saved) — list only, omits instructions/skills |
 | GET | `/rest/collections/get_collection?collection_slug={slug}` | Per-space detail: instructions, description, suggested_queries, primers (param must be `collection_slug`; `collection_uuid` → 422) |
 | GET | `/rest/skills/selectable?collection_uuid={uuid}` | Skills selectable in a space; space-attached skills have `scope=="collection"` (vs `global`) |
+| GET | `/rest/skills/selectable` (no `collection_uuid`) | Account-wide skills; returns only `scope=="global"` entries (applied to every request) |
 | GET | `/rest/skills/{id}?view_scope=individual` | Skill detail incl. pre-signed S3 `file_url` for the SKILL.md body |
 | GET | `/api/user` | User profile |
 | GET | `/api/auth/session` | Session info + expiry |
@@ -83,7 +85,7 @@ Answer content is in `entries[].blocks[]` where `intended_usage == "ask_text_0_m
 
 1. **Phase 1 — Index**: `POST /rest/thread/list_ask_threads` with pagination (limit=20, ascending=false). Dual stop condition: `len(response) < limit` (primary) + all-duplicates (safety net). Result cached in `thread_index.json` with `Complete: true` flag.
 2. **Phase 2 — Details**: `GET /rest/thread/{uuid}` for each thread. Skips threads already fetched on disk. Adaptive rate limiting: delay doubles after 429, halves after 20 consecutive successes.
-3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF. Write threads to `threads/<slug>/` (canonical flat list). Copy thread files into `spaces/<name>/threads/<slug>/` so each space folder is self-contained.
+3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF. Write threads to `threads/<slug>/` (canonical flat list). Copy thread files into `spaces/<name>/threads/<slug>/` so each space folder is self-contained. Account-wide global skills are written **once** under `account/`: `account/account.json` (JSON) + `account/global-skills.md` (Markdown), with each skill body in `account/skills/<name>.md`. They are not duplicated per space.
 
 Use `--refresh` to force re-fetching the thread index.
 

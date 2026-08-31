@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -140,6 +143,39 @@ func TestFinalizeIndex(t *testing.T) {
 			}
 			if reloaded.Complete != tt.wantComplete {
 				t.Errorf("persisted Complete = %t, want %t", reloaded.Complete, tt.wantComplete)
+			}
+		})
+	}
+}
+
+// TestExportFormatAccountGating locks in the render half of the --no-spaces
+// gate: when spaces (and thus global skills) are disabled, Run leaves account
+// nil, and exportFormat must then write no account/ output for any format. The
+// positive case confirms a non-nil account does produce account/ output.
+func TestExportFormatAccountGating(t *testing.T) {
+	for _, format := range []string{"json", "markdown"} {
+		t.Run(format+"/nil account writes nothing", func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := &ExportCmd{Output: dir, Format: []string{format}}
+			if err := cmd.exportFormat(context.Background(), format, nil, nil, nil, nil); err != nil {
+				t.Fatalf("exportFormat: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "account")); !os.IsNotExist(err) {
+				t.Errorf("nil account produced account/ output (err=%v)", err)
+			}
+		})
+
+		t.Run(format+"/non-nil account writes output", func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := &ExportCmd{Output: dir, Format: []string{format}}
+			account := &models.Account{GlobalSkills: []models.Skill{
+				{ID: "g1", Name: "create-skill", Scope: "global", Body: "body"},
+			}}
+			if err := cmd.exportFormat(context.Background(), format, nil, nil, nil, account); err != nil {
+				t.Fatalf("exportFormat: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "account")); err != nil {
+				t.Errorf("non-nil account produced no account/ output: %v", err)
 			}
 		})
 	}
