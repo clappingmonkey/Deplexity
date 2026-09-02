@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/go-rod/rod v0.116.2
-	github.com/gpdf-dev/gpdf v1.0.11
+	github.com/gpdf-dev/gpdf v1.0.12
 	github.com/refraction-networking/utls v1.8.2
 	github.com/schollz/progressbar/v3 v3.19.1
 	golang.org/x/net v0.58.0
