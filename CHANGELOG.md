@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/clappingmonkey/Deplexity/compare/v0.3.0...v0.4.0) (2026-09-05)
+
+
+### Features
+
+* export account-wide global skills once at top level ([#66](https://github.com/clappingmonkey/Deplexity/issues/66)) ([65256f8](https://github.com/clappingmonkey/Deplexity/commit/65256f898180c4758df897b8af733ee16a8b5caf))
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.12 ([#68](https://github.com/clappingmonkey/Deplexity/issues/68)) ([6f5e172](https://github.com/clappingmonkey/Deplexity/commit/6f5e172ea098a7c1a841829cbe21b92da1e18e1e))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.13 ([#70](https://github.com/clappingmonkey/Deplexity/issues/70)) ([3f530d0](https://github.com/clappingmonkey/Deplexity/commit/3f530d06ee554f273f92c26a9852cbe97ec7cee0))
+
 ## [0.3.0](https://github.com/clappingmonkey/Deplexity/compare/v0.2.6...v0.3.0) (2026-08-29)
 
 
