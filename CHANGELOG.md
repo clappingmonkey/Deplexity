@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/clappingmonkey/Deplexity/compare/v0.3.0...v0.4.0) (2026-09-08)
+
+
+### Features
+
+* export account-wide global skills once at top level ([#66](https://github.com/clappingmonkey/Deplexity/issues/66)) ([65256f8](https://github.com/clappingmonkey/Deplexity/commit/65256f898180c4758df897b8af733ee16a8b5caf))
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.12 ([#68](https://github.com/clappingmonkey/Deplexity/issues/68)) ([6f5e172](https://github.com/clappingmonkey/Deplexity/commit/6f5e172ea098a7c1a841829cbe21b92da1e18e1e))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.13 ([#70](https://github.com/clappingmonkey/Deplexity/issues/70)) ([3f530d0](https://github.com/clappingmonkey/Deplexity/commit/3f530d06ee554f273f92c26a9852cbe97ec7cee0))
+* disambiguate space export paths ([#74](https://github.com/clappingmonkey/Deplexity/issues/74)) ([b436a58](https://github.com/clappingmonkey/Deplexity/commit/b436a5876834cd73616b31052c4f7fbf74937b48))
+* make request pacing cancellable ([#76](https://github.com/clappingmonkey/Deplexity/issues/76)) ([c9c5bad](https://github.com/clappingmonkey/Deplexity/commit/c9c5badf0967b184112f2999e480507a8c6908fb))
+* preserve thread slugs ([#75](https://github.com/clappingmonkey/Deplexity/issues/75)) ([1628e22](https://github.com/clappingmonkey/Deplexity/commit/1628e22571b0eed2e8d5d2ceec33d447f1dded0f))
+* relist incomplete thread indexes ([#73](https://github.com/clappingmonkey/Deplexity/issues/73)) ([a234805](https://github.com/clappingmonkey/Deplexity/commit/a2348057d6856f8c6e0f4ea708d43e0b4e19425b))
+* report incomplete thread exports ([#72](https://github.com/clappingmonkey/Deplexity/issues/72)) ([6117b42](https://github.com/clappingmonkey/Deplexity/commit/6117b42d5d1c53a6a95b7a15f2b64b02fae97e7f))
+
 ## [0.3.0](https://github.com/clappingmonkey/Deplexity/compare/v0.2.6...v0.3.0) (2026-08-29)
 
 
