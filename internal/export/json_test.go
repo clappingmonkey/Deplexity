@@ -113,10 +113,9 @@ func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 		t.Fatalf("ExportSpaces: %v", err)
 	}
 
-	// The exporter sanitizes (and lowercases) the space name for the folder,
-	// so derive the expected path the same way rather than hardcoding "Recipes"
-	// (which passes on case-insensitive macOS but fails on case-sensitive Linux).
-	spaceDir := filepath.Join(dir, "spaces", sanitizeFilename(space.Name))
+	// Derive the canonical, identity-suffixed directory through the same shared
+	// helper used by every exporter.
+	spaceDir := filepath.Join(dir, "spaces", spaceDirNames([]models.Space{space})[0])
 
 	// The skill body file must exist with the fetched content.
 	bodyPath := filepath.Join(spaceDir, "skills", "git-commit.md")
@@ -158,6 +157,73 @@ func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 	// Body must never be serialized into JSON.
 	if strings.Contains(string(raw), "Commit helper body") {
 		t.Error("space.json leaked the skill body; Body should be json:\"-\"")
+	}
+}
+
+func TestExportSpacesSeparatesCollidingNames(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	spaces := []models.Space{
+		{UUID: "aaaaaaaa1111", Name: "Recipes", ThreadUUIDs: []string{"thread-a"}},
+		{UUID: "bbbbbbbb2222", Name: "recipes", ThreadUUIDs: []string{"thread-b"}},
+	}
+	threads := []models.Thread{
+		{UUID: "thread-a", Slug: "thread-a", Complete: true},
+		{UUID: "thread-b", Slug: "thread-b", Complete: true},
+	}
+
+	if err := exporter.ExportSpaces(context.Background(), spaces, threads); err != nil {
+		t.Fatalf("ExportSpaces: %v", err)
+	}
+	dirs := spaceDirNames(spaces)
+	if dirs[0] == dirs[1] {
+		t.Fatalf("colliding spaces share directory %q", dirs[0])
+	}
+	for i, space := range spaces {
+		spaceDir := filepath.Join(dir, "spaces", dirs[i])
+		raw, err := os.ReadFile(filepath.Join(spaceDir, "space.json"))
+		if err != nil {
+			t.Fatalf("read %s space.json: %v", space.UUID, err)
+		}
+		var written models.Space
+		if err := json.Unmarshal(raw, &written); err != nil {
+			t.Fatalf("unmarshal %s space.json: %v", space.UUID, err)
+		}
+		if written.UUID != space.UUID {
+			t.Errorf("space dir %q contains UUID %q, want %q", dirs[i], written.UUID, space.UUID)
+		}
+		ownThread := filepath.Join(spaceDir, "threads", space.ThreadUUIDs[0], "thread.json")
+		if _, err := os.Stat(ownThread); err != nil {
+			t.Errorf("space %s missing own thread: %v", space.UUID, err)
+		}
+		otherThread := filepath.Join(spaceDir, "threads", spaces[1-i].ThreadUUIDs[0], "thread.json")
+		if _, err := os.Stat(otherThread); !os.IsNotExist(err) {
+			t.Errorf("space %s contains other space thread (err=%v)", space.UUID, err)
+		}
+	}
+}
+
+func TestExportSpacesLeavesLegacyDirectoryUntouched(t *testing.T) {
+	dir := t.TempDir()
+	legacyDir := filepath.Join(dir, "spaces", "recipes")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatalf("create legacy dir: %v", err)
+	}
+	sentinel := filepath.Join(legacyDir, "legacy.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+		t.Fatalf("write legacy sentinel: %v", err)
+	}
+	space := models.Space{UUID: "e79179d1", Name: "Recipes"}
+	exporter := &JSONExporter{OutputDir: dir}
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, nil); err != nil {
+		t.Fatalf("ExportSpaces: %v", err)
+	}
+	if body, err := os.ReadFile(sentinel); err != nil || string(body) != "keep" {
+		t.Fatalf("legacy directory changed: body=%q err=%v", body, err)
+	}
+	newDir := filepath.Join(dir, "spaces", spaceDirNames([]models.Space{space})[0])
+	if _, err := os.Stat(filepath.Join(newDir, "space.json")); err != nil {
+		t.Fatalf("canonical space directory missing: %v", err)
 	}
 }
 

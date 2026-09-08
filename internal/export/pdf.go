@@ -61,7 +61,8 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 	for i := range threads {
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
-	for _, space := range spaces {
+	spaceDirs := spaceDirNames(spaces)
+	for i, space := range spaces {
 		for _, uuid := range space.ThreadUUIDs {
 			select {
 			case <-ctx.Done():
@@ -72,7 +73,7 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 			if thread == nil {
 				continue
 			}
-			dir := filepath.Join(e.OutputDir, "spaces", sanitizeFilename(space.Name), "threads", sanitizeFilename(threadSlug(thread)))
+			dir := filepath.Join(e.OutputDir, "spaces", spaceDirs[i], "threads", sanitizeFilename(threadSlug(thread)))
 			if err := writeThreadPDF(dir, thread); err != nil {
 				return err
 			}

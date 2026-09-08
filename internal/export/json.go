@@ -162,13 +162,14 @@ func (e *JSONExporter) ExportSpaces(ctx context.Context, spaces []models.Space, 
 	for i := range threads {
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
+	spaceDirs := spaceDirNames(spaces)
 
 	// Iterate by index (&spaces[i]) rather than a range copy: writeSpaceSkills
 	// records each skill's BodyFile in place, and that mutation must be visible
 	// to the space.json serialization below.
 	for i := range spaces {
 		space := &spaces[i]
-		spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
+		spaceDir := filepath.Join(dir, spaceDirs[i])
 		if err := os.MkdirAll(spaceDir, 0755); err != nil {
 			return fmt.Errorf("could not create space directory: %w", err)
 		}
