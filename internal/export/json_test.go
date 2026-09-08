@@ -19,7 +19,8 @@ func TestLoadCompleteThread(t *testing.T) {
 		t.Fatalf("ExportThread: %v", err)
 	}
 
-	if _, err := exporter.LoadCompleteThread(thread.UUID); err == nil {
+	ref := models.ThreadRef{UUID: thread.UUID, Slug: thread.Slug}
+	if _, err := exporter.LoadCompleteThread(ref); err == nil {
 		t.Fatal("LoadCompleteThread succeeded for an incomplete thread")
 	}
 
@@ -28,7 +29,7 @@ func TestLoadCompleteThread(t *testing.T) {
 		t.Fatalf("ExportThread: %v", err)
 	}
 
-	loaded, err := exporter.LoadCompleteThread(thread.UUID)
+	loaded, err := exporter.LoadCompleteThread(ref)
 	if err != nil {
 		t.Fatalf("LoadCompleteThread: %v", err)
 	}
@@ -45,12 +46,126 @@ func TestLoadCompleteThreadPreservesMetadata(t *testing.T) {
 		t.Fatalf("ExportThread: %v", err)
 	}
 
-	loaded, err := exporter.LoadCompleteThread(thread.UUID)
+	loaded, err := exporter.LoadCompleteThread(models.ThreadRef{UUID: thread.UUID, Slug: thread.Slug})
 	if err != nil {
 		t.Fatalf("LoadCompleteThread: %v", err)
 	}
 	if !loaded.UpdatedAt.Equal(updatedAt) {
 		t.Errorf("UpdatedAt = %v, want %v", loaded.UpdatedAt, updatedAt)
+	}
+}
+
+func TestLoadThreadFallsBackToLegacyUUIDDirectory(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	legacyDir := filepath.Join(dir, "threads", "thread-1")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatalf("create legacy directory: %v", err)
+	}
+	legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy thread: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "thread.json"), data, 0600); err != nil {
+		t.Fatalf("write legacy thread: %v", err)
+	}
+
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "human-readable-slug"}
+	loaded, err := exporter.LoadCompleteThread(ref)
+	if err != nil {
+		t.Fatalf("LoadCompleteThread: %v", err)
+	}
+	if loaded.UUID != ref.UUID {
+		t.Errorf("loaded UUID = %q, want %q", loaded.UUID, ref.UUID)
+	}
+	if exporter.HasCanonicalThread(ref) {
+		t.Fatal("legacy load unexpectedly created the canonical path")
+	}
+}
+
+func TestLoadThreadUsesFirstMatchingUUIDCandidate(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "current", PreviousSlug: "previous"}
+
+	writeCandidate := func(slug, uuid, title string) {
+		t.Helper()
+		candidateDir := filepath.Join(dir, "threads", threadDirName(slug, ref.UUID))
+		if err := os.MkdirAll(candidateDir, 0755); err != nil {
+			t.Fatalf("create candidate directory: %v", err)
+		}
+		data, err := json.Marshal(models.Thread{UUID: uuid, Slug: slug, Title: title, Complete: true})
+		if err != nil {
+			t.Fatalf("marshal candidate: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(candidateDir, "thread.json"), data, 0600); err != nil {
+			t.Fatalf("write candidate: %v", err)
+		}
+	}
+
+	writeCandidate("current", "wrong-thread", "wrong current")
+	writeCandidate("previous", ref.UUID, "matching previous")
+	loaded, err := exporter.LoadCompleteThread(ref)
+	if err != nil {
+		t.Fatalf("LoadCompleteThread: %v", err)
+	}
+	if loaded.Title != "matching previous" {
+		t.Errorf("loaded title = %q, want matching previous candidate", loaded.Title)
+	}
+
+	writeCandidate("current", ref.UUID, "matching current")
+	loaded, err = exporter.LoadCompleteThread(ref)
+	if err != nil {
+		t.Fatalf("LoadCompleteThread with current candidate: %v", err)
+	}
+	if loaded.Title != "matching current" {
+		t.Errorf("loaded title = %q, want current candidate precedence", loaded.Title)
+	}
+}
+
+func TestLoadThreadFindsCanonicalCacheWrittenBeforeSlugWasKnown(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	thread := &models.Thread{UUID: "thread-1", Complete: true}
+	if err := exporter.ExportThread(thread); err != nil {
+		t.Fatalf("ExportThread: %v", err)
+	}
+
+	ref := models.ThreadRef{UUID: thread.UUID, Slug: "newly-listed-slug"}
+	loaded, err := exporter.LoadCompleteThread(ref)
+	if err != nil {
+		t.Fatalf("LoadCompleteThread: %v", err)
+	}
+	if loaded.UUID != ref.UUID {
+		t.Errorf("loaded UUID = %q, want %q", loaded.UUID, ref.UUID)
+	}
+}
+
+func TestLoadThreadRejectsWrongUUIDInEveryCandidate(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "current", PreviousSlug: "previous"}
+	paths := []string{
+		filepath.Join(dir, "threads", threadDirName(ref.Slug, ref.UUID)),
+		filepath.Join(dir, "threads", threadDirName(ref.PreviousSlug, ref.UUID)),
+		filepath.Join(dir, "threads", sanitizeFilename(ref.UUID)),
+	}
+	for _, candidateDir := range paths {
+		if err := os.MkdirAll(candidateDir, 0755); err != nil {
+			t.Fatalf("create candidate directory: %v", err)
+		}
+		data, err := json.Marshal(models.Thread{UUID: "wrong-thread", Complete: true})
+		if err != nil {
+			t.Fatalf("marshal candidate: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(candidateDir, "thread.json"), data, 0600); err != nil {
+			t.Fatalf("write candidate: %v", err)
+		}
+	}
+
+	if _, err := exporter.LoadCompleteThread(ref); err == nil || !strings.Contains(err.Error(), "want \"thread-1\"") {
+		t.Fatalf("error = %v, want UUID mismatch", err)
 	}
 }
 
@@ -71,10 +186,11 @@ func TestExportThreadMarksCacheIncompleteUntilSidecarsSucceed(t *testing.T) {
 	if err := exporter.ExportThread(thread); err == nil {
 		t.Fatal("ExportThread succeeded with blocked sources.json")
 	}
-	if _, err := exporter.LoadCompleteThread(thread.UUID); err == nil {
+	ref := models.ThreadRef{UUID: thread.UUID, Slug: thread.Slug}
+	if _, err := exporter.LoadCompleteThread(ref); err == nil {
 		t.Fatal("LoadCompleteThread accepted cache after sidecar write failure")
 	}
-	partial, err := exporter.LoadThread(thread.UUID)
+	partial, err := exporter.LoadThread(ref)
 	if err != nil {
 		t.Fatalf("LoadThread: %v", err)
 	}
@@ -192,13 +308,42 @@ func TestExportSpacesSeparatesCollidingNames(t *testing.T) {
 		if written.UUID != space.UUID {
 			t.Errorf("space dir %q contains UUID %q, want %q", dirs[i], written.UUID, space.UUID)
 		}
-		ownThread := filepath.Join(spaceDir, "threads", space.ThreadUUIDs[0], "thread.json")
+		ownThread := filepath.Join(spaceDir, "threads", threadDirName(threads[i].Slug, threads[i].UUID), "thread.json")
 		if _, err := os.Stat(ownThread); err != nil {
 			t.Errorf("space %s missing own thread: %v", space.UUID, err)
 		}
-		otherThread := filepath.Join(spaceDir, "threads", spaces[1-i].ThreadUUIDs[0], "thread.json")
+		otherThread := filepath.Join(spaceDir, "threads", threadDirName(threads[1-i].Slug, threads[1-i].UUID), "thread.json")
 		if _, err := os.Stat(otherThread); !os.IsNotExist(err) {
 			t.Errorf("space %s contains other space thread (err=%v)", space.UUID, err)
+		}
+	}
+}
+
+func TestExportSpacesSeparatesCollidingThreadSlugs(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	space := models.Space{UUID: "space-1", Name: "Space", ThreadUUIDs: []string{"thread-a", "thread-b"}}
+	threads := []models.Thread{
+		{UUID: "thread-a", Slug: "C++", Complete: true},
+		{UUID: "thread-b", Slug: "C#", Complete: true},
+	}
+
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, threads); err != nil {
+		t.Fatalf("ExportSpaces: %v", err)
+	}
+	spaceDir := filepath.Join(dir, "spaces", spaceDirNames([]models.Space{space})[0], "threads")
+	for _, thread := range threads {
+		path := filepath.Join(spaceDir, threadDirName(thread.Slug, thread.UUID), "thread.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var written models.Thread
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("unmarshal %s: %v", path, err)
+		}
+		if written.UUID != thread.UUID {
+			t.Errorf("%s contains UUID %q, want %q", path, written.UUID, thread.UUID)
 		}
 	}
 }

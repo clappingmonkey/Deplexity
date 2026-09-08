@@ -220,3 +220,35 @@ func TestSpaceDirNamesAreStableWhenIdentityPrefixesCollide(t *testing.T) {
 		t.Fatalf("distinct identities with shared prefix collided: %q", forward[0])
 	}
 }
+
+func TestThreadDirNameUsesSlugAndFullUUIDIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		slug string
+		uuid string
+	}{
+		{name: "normal", slug: "Readable Thread", uuid: "aaaaaaaa1111"},
+		{name: "empty slug", uuid: "bbbbbbbb2222"},
+		{name: "unsafe slug", slug: "..", uuid: "cccccccc3333"},
+		{name: "long slug", slug: strings.Repeat("a", 200), uuid: "dddddddd4444"},
+		{name: "trimmed empty slug", slug: strings.Repeat(".-", 100), uuid: "eeeeeeee5555"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := threadDirName(tt.slug, tt.uuid)
+			if len(got) > maxFilenameLength {
+				t.Fatalf("length = %d, want <= %d", len(got), maxFilenameLength)
+			}
+			if got == "." || got == ".." || !strings.Contains(got, spaceIdentitySuffix(tt.uuid)) {
+				t.Errorf("threadDirName(%q, %q) = %q, want safe UUID identity suffix", tt.slug, tt.uuid, got)
+			}
+		})
+	}
+
+	first := threadDirName("C++", "aaaaaaaa-cd9a-5224-e37f-87674679dc48")
+	second := threadDirName("C#", "aaaaaaaa-98fa-e548-7436-4992599ad117")
+	if first == second {
+		t.Fatalf("normalized slug and shared hash-prefix collision produced %q", first)
+	}
+}

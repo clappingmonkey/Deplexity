@@ -73,7 +73,7 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 			if thread == nil {
 				continue
 			}
-			dir := filepath.Join(e.OutputDir, "spaces", spaceDirs[i], "threads", sanitizeFilename(threadSlug(thread)))
+			dir := filepath.Join(e.OutputDir, "spaces", spaceDirs[i], "threads", threadDirName(thread.Slug, thread.UUID))
 			if err := writeThreadPDF(dir, thread); err != nil {
 				return err
 			}
@@ -212,5 +212,5 @@ func writeThreadPDF(dir string, thread *models.Thread) error {
 
 // threadDir returns the output directory for a thread.
 func (e *PDFExporter) threadDir(thread *models.Thread) string {
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID))
 }

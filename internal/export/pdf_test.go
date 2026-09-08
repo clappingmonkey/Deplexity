@@ -17,8 +17,8 @@ func TestPDFExportSpacesUsesCanonicalDirectories(t *testing.T) {
 		{UUID: "bbbbbbbb2222", Name: "recipes", ThreadUUIDs: []string{"thread-b"}},
 	}
 	threads := []models.Thread{
-		{UUID: "thread-a", Slug: "thread-a", Title: "A"},
-		{UUID: "thread-b", Slug: "thread-b", Title: "B"},
+		{UUID: "thread-a", Slug: "same-slug", Title: "A"},
+		{UUID: "thread-b", Slug: "same-slug", Title: "B"},
 	}
 
 	if err := exporter.ExportSpaces(context.Background(), spaces, threads); err != nil {
@@ -26,7 +26,7 @@ func TestPDFExportSpacesUsesCanonicalDirectories(t *testing.T) {
 	}
 	dirs := spaceDirNames(spaces)
 	for i, thread := range threads {
-		pdfPath := filepath.Join(dir, "spaces", dirs[i], "threads", thread.Slug, "thread.pdf")
+		pdfPath := filepath.Join(dir, "spaces", dirs[i], "threads", threadDirName(thread.Slug, thread.UUID), "thread.pdf")
 		info, err := os.Stat(pdfPath)
 		if err != nil {
 			t.Fatalf("stat %s: %v", pdfPath, err)

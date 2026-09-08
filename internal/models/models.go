@@ -165,11 +165,13 @@ type ThreadIndex struct {
 // ThreadRef is a lightweight reference to a thread from the list endpoint.
 type ThreadRef struct {
 	UUID              string    `json:"uuid"`
+	Slug              string    `json:"slug,omitempty"`
 	Title             string    `json:"title"`
 	SpaceUUID         string    `json:"space_uuid,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	RetryRequired     bool      `json:"retry_required,omitempty"`
 	PreviousUpdatedAt time.Time `json:"-"`
+	PreviousSlug      string    `json:"-"`
 }
 
 // SavedSession represents the persisted authentication session.

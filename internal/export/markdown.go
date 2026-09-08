@@ -190,7 +190,7 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 			if thread == nil {
 				continue
 			}
-			threadDir := filepath.Join(spaceDir, "threads", sanitizeFilename(threadSlug(thread)))
+			threadDir := filepath.Join(spaceDir, "threads", threadDirName(thread.Slug, thread.UUID))
 			if err := writeThreadMarkdown(threadDir, thread); err != nil {
 				return err
 			}
@@ -301,7 +301,7 @@ func (e *MarkdownExporter) ExportAccount(account *models.Account) error {
 
 // threadDir returns the output directory for a thread.
 func (e *MarkdownExporter) threadDir(thread *models.Thread) string {
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID))
 }
 
 // blockquote renders text as a Markdown blockquote, prefixing every line with

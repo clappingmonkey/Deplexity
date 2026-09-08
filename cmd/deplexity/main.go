@@ -214,7 +214,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 
 	// Write the manifest before reporting a partial thread failure so successful
 	// output remains usable and the incomplete run is machine-detectable.
-	manifest := buildManifest(cmd.Format, threads, spaces, account, len(threadRefs), threadFailures)
+	manifest := buildManifest(cmd.Format, threads, threadRefs, spaces, account, threadFailures)
 
 	if err := finalizeExport(jsonExp, manifest); err != nil {
 		return err
@@ -234,13 +234,13 @@ func finalizeExport(jsonExp *export.JSONExporter, manifest *models.ExportManifes
 	return nil
 }
 
-func buildManifest(formats []string, threads []models.Thread, spaces []models.Space, account *models.Account, expectedThreads int, failures []models.ThreadExportFailure) *models.ExportManifest {
+func buildManifest(formats []string, threads []models.Thread, refs []models.ThreadRef, spaces []models.Space, account *models.Account, failures []models.ThreadExportFailure) *models.ExportManifest {
 	manifest := &models.ExportManifest{
 		Version:         version,
 		ExportedAt:      time.Now().UTC(),
 		Formats:         formats,
 		ThreadsComplete: len(failures) == 0,
-		ExpectedThreads: expectedThreads,
+		ExpectedThreads: len(refs),
 		FailedThreads:   failures,
 		Counts: models.ExportCounts{
 			Threads: len(threads),
@@ -248,11 +248,16 @@ func buildManifest(formats []string, threads []models.Thread, spaces []models.Sp
 		},
 		ThreadIndex: make(map[string]string),
 	}
+	for _, ref := range refs {
+		manifest.ThreadIndex[ref.UUID] = ref.Slug
+	}
 	if account != nil {
 		manifest.Counts.GlobalSkills = len(account.GlobalSkills)
 	}
 	for _, t := range threads {
-		manifest.ThreadIndex[t.UUID] = t.Slug
+		if manifest.ThreadIndex[t.UUID] == "" {
+			manifest.ThreadIndex[t.UUID] = t.Slug
+		}
 		for _, e := range t.Entries {
 			manifest.Counts.Sources += len(e.Sources)
 		}
@@ -392,7 +397,7 @@ func finalizeIndex(jsonExp *export.JSONExporter, index *models.ThreadIndex) erro
 func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	refs := make([]models.ThreadRef, 0, len(threads))
 	for _, t := range threads {
-		refs = append(refs, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
+		refs = append(refs, models.ThreadRef{UUID: t.UUID, Slug: t.Slug, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
 	}
 	return refs
 }
@@ -405,7 +410,7 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 	var missing []int
 	failuresByUUID := make(map[string]models.ThreadExportFailure)
 	for i, ref := range refs {
-		cached, err := jsonExp.LoadCompleteThread(ref.UUID)
+		cached, err := jsonExp.LoadCompleteThread(ref)
 		if needsThreadFetch(cmd.Refresh, ref, cached, err) {
 			missing = append(missing, i)
 			refs[i].RetryRequired = true
@@ -429,16 +434,20 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 			default:
 			}
 
-			partial, err := jsonExp.LoadThread(ref.UUID)
+			partial, err := jsonExp.LoadThread(*ref)
 			if err != nil {
 				partial = nil
 			}
+			applyThreadRefMetadata(partial, *ref)
 			resume := resumePoint(cmd.Refresh, partial)
 			if resume != nil {
 				fmt.Printf("\n  Resuming thread %s (%d entries so far)\n", ref.UUID, len(resume.Entries))
 			}
 
-			onPage := func(t *models.Thread) error { return jsonExp.ExportThread(t) }
+			onPage := func(t *models.Thread) error {
+				applyThreadRefMetadata(t, *ref)
+				return jsonExp.ExportThread(t)
+			}
 
 			full, err := getThread(ctx, ref.UUID, resume, onPage)
 			if err != nil {
@@ -450,6 +459,7 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 				_ = bar.Add(1)
 				continue
 			}
+			applyThreadRefMetadata(full, *ref)
 
 			// Write to disk immediately
 			if err := jsonExp.ExportThread(full); err != nil {
@@ -471,16 +481,51 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 		if _, failed := failuresByUUID[ref.UUID]; failed {
 			continue
 		}
-		t, err := jsonExp.LoadCompleteThread(ref.UUID)
+		t, err := jsonExp.LoadCompleteThread(ref)
 		if err != nil {
 			failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageLoad, Error: err.Error()}
 			refs[i].RetryRequired = true
 			continue
 		}
+		changed := applyThreadRefMetadata(t, ref)
+		if changed || !jsonExp.HasCanonicalThread(ref) {
+			if err := jsonExp.ExportThread(t); err != nil {
+				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageWrite, Error: err.Error()}
+				refs[i].RetryRequired = true
+				continue
+			}
+		}
 		threads = append(threads, *t)
 	}
 
 	return threads, orderedThreadFailures(refs, failuresByUUID), nil
+}
+
+// applyThreadRefMetadata restores list-only slug and space identity while using
+// list title/timestamps only when detail metadata is absent. Empty legacy refs
+// retain whatever the detail cache already contains.
+func applyThreadRefMetadata(thread *models.Thread, ref models.ThreadRef) bool {
+	if thread == nil {
+		return false
+	}
+	changed := false
+	if ref.Slug != "" && thread.Slug != ref.Slug {
+		thread.Slug = ref.Slug
+		changed = true
+	}
+	if ref.Title != "" && thread.Title == "" {
+		thread.Title = ref.Title
+		changed = true
+	}
+	if ref.SpaceUUID != "" && thread.SpaceUUID != ref.SpaceUUID {
+		thread.SpaceUUID = ref.SpaceUUID
+		changed = true
+	}
+	if !ref.UpdatedAt.IsZero() && thread.UpdatedAt.IsZero() {
+		thread.UpdatedAt = ref.UpdatedAt
+		changed = true
+	}
+	return changed
 }
 
 func orderedThreadFailures(refs []models.ThreadRef, failuresByUUID map[string]models.ThreadExportFailure) []models.ThreadExportFailure {
@@ -518,6 +563,7 @@ func attachPreviousUpdatedAt(refs []models.ThreadRef, previous []models.ThreadRe
 	for i := range refs {
 		previousRef := previousByUUID[refs[i].UUID]
 		refs[i].PreviousUpdatedAt = previousRef.UpdatedAt
+		refs[i].PreviousSlug = previousRef.Slug
 		refs[i].RetryRequired = previousRef.RetryRequired
 	}
 }

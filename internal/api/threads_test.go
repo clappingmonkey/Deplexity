@@ -99,18 +99,27 @@ func TestParseTime(t *testing.T) {
 }
 
 func TestThreadListItemMapping(t *testing.T) {
-	raw := ThreadListItem{
-		UUID:   "abc-123",
-		Title:  "Test Thread",
-		Slug:   "abc-123",
-		Status: "completed",
-	}
+	poster := &threadPoster{responses: []ThreadListResponse{{{
+		UUID:          "abc-123",
+		Title:         "Test Thread",
+		Slug:          "human-readable-slug",
+		LastQueryTime: "2024-06-15T10:30:00Z",
+		Collection:    &ThreadCollection{UUID: "space-1"},
+	}}}}
 
-	if raw.UUID != "abc-123" {
-		t.Errorf("unexpected UUID: %s", raw.UUID)
+	threads, err := ListThreads(context.Background(), poster, nil)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
 	}
-	if raw.Title != "Test Thread" {
-		t.Errorf("unexpected Title: %s", raw.Title)
+	if len(threads) != 1 {
+		t.Fatalf("got %d threads, want 1", len(threads))
+	}
+	got := threads[0]
+	if got.UUID != "abc-123" || got.Title != "Test Thread" || got.Slug != "human-readable-slug" || got.SpaceUUID != "space-1" {
+		t.Errorf("thread = %#v, want all list metadata preserved", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt was not mapped")
 	}
 }
 
@@ -352,7 +361,9 @@ func TestGetThreadResumesFromCheckpoint(t *testing.T) {
 
 	resume := &models.Thread{
 		UUID:       "thread-1",
+		Slug:       "human-readable-slug",
 		Title:      "Long thread",
+		SpaceUUID:  "space-1",
 		Entries:    []models.Entry{{UUID: "entry-1"}, {UUID: "entry-2"}},
 		NextCursor: "cursor-1",
 	}
@@ -382,6 +393,9 @@ func TestGetThreadResumesFromCheckpoint(t *testing.T) {
 	}
 	if thread.NextCursor != "" {
 		t.Errorf("NextCursor = %q, want cleared on completion", thread.NextCursor)
+	}
+	if thread.Slug != resume.Slug || thread.SpaceUUID != resume.SpaceUUID {
+		t.Errorf("thread metadata = %#v, want resume slug and space preserved", thread)
 	}
 }
 
