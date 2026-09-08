@@ -119,11 +119,17 @@ Export runs in two phases:
 
 Use `--refresh` to force re-fetching the thread index (e.g., after new conversations).
 
+If one or more thread details cannot be fetched or written after retries, Deplexity
+keeps and renders every thread that completed successfully, writes the failure
+details to `manifest.json`, and exits with a non-zero status. Re-run the same export
+command to retry the missing threads from the saved checkpoints. A cancelled export
+stops immediately instead of being reported as a partial success.
+
 ### Output Structure
 
 ```
 deplexity-export/
-├── manifest.json              # Export metadata (timestamp, counts, version)
+├── manifest.json              # Export metadata, thread completeness, and failures
 ├── thread_index.json          # Cached thread list (for resumable exports)
 ├── profile/
 │   └── user.json
@@ -158,6 +164,11 @@ Each space folder is self-contained — you can ZIP and share a single space wit
 Space exports capture each space's full context: its custom AI instructions, description, suggested queries, primers, and any attached skills. Skill definitions are written as `SKILL.md` files under `spaces/<space-name>/skills/` and referenced from `space.json`.
 
 Account-wide **global skills** apply to every request regardless of space, so they are exported once under `account/` rather than duplicated per space. They are captured when spaces are exported (skip them with `--no-spaces`) and are written to JSON and Markdown outputs (`account/account.json`, `account/global-skills.md`, and bodies under `account/skills/`); PDF-only exports do not include them.
+
+For automation, `manifest.json` reports `threads_complete`, `expected_threads`,
+and `failed_threads`. Each failure includes its thread UUID, optional title, stage
+(`fetch`, `write`, or `load`), and error message. `counts.threads` remains the
+number of threads present in the current export.
 
 ---
 

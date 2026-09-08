@@ -28,6 +28,8 @@ var (
 	buildTime = "unknown"
 )
 
+var errIncompleteThreadExport = errors.New("thread export incomplete")
+
 // CLI defines the top-level command structure.
 type CLI struct {
 	Verbose bool       `short:"v" help:"Enable verbose/debug output."`
@@ -118,8 +120,19 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 
 	// === Phase 2: Fetch thread details (resumable) ===
 	var threads []models.Thread
+	var threadFailures []models.ThreadExportFailure
 	if cmd.Threads && len(threadRefs) > 0 {
-		threads, err = cmd.fetchThreadDetails(ctx, c, jsonExp, threadRefs)
+		getThread := func(ctx context.Context, uuid string, resume *models.Thread, onPage func(*models.Thread) error) (*models.Thread, error) {
+			return api.GetThread(ctx, c, uuid, resume, onPage)
+		}
+		threads, threadFailures, err = cmd.fetchThreadDetails(ctx, jsonExp, threadRefs, getThread)
+		if persistErr := persistThreadRetryState(jsonExp, threadRefs); persistErr != nil {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not save thread retry state: %v\n", persistErr)
+			} else {
+				return persistErr
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -196,11 +209,36 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		}
 	}
 
-	// Write manifest
+	// Write the manifest before reporting a partial thread failure so successful
+	// output remains usable and the incomplete run is machine-detectable.
+	manifest := buildManifest(cmd.Format, threads, spaces, account, len(threadRefs), threadFailures)
+
+	if err := finalizeExport(jsonExp, manifest); err != nil {
+		return err
+	}
+
+	fmt.Printf("\nExport complete: %s (%s)\n", cmd.Output, time.Since(startTime).Round(time.Second))
+	return nil
+}
+
+func finalizeExport(jsonExp *export.JSONExporter, manifest *models.ExportManifest) error {
+	if err := jsonExp.ExportManifest(manifest); err != nil {
+		return err
+	}
+	if len(manifest.FailedThreads) > 0 {
+		return fmt.Errorf("%w: %d of %d threads failed; re-run the same command to resume", errIncompleteThreadExport, len(manifest.FailedThreads), manifest.ExpectedThreads)
+	}
+	return nil
+}
+
+func buildManifest(formats []string, threads []models.Thread, spaces []models.Space, account *models.Account, expectedThreads int, failures []models.ThreadExportFailure) *models.ExportManifest {
 	manifest := &models.ExportManifest{
-		Version:    version,
-		ExportedAt: time.Now().UTC(),
-		Formats:    cmd.Format,
+		Version:         version,
+		ExportedAt:      time.Now().UTC(),
+		Formats:         formats,
+		ThreadsComplete: len(failures) == 0,
+		ExpectedThreads: expectedThreads,
+		FailedThreads:   failures,
 		Counts: models.ExportCounts{
 			Threads: len(threads),
 			Spaces:  len(spaces),
@@ -216,12 +254,30 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 			manifest.Counts.Sources += len(e.Sources)
 		}
 	}
+	return manifest
+}
 
-	if err := jsonExp.ExportManifest(manifest); err != nil {
-		return err
+func persistThreadRetryState(jsonExp *export.JSONExporter, refs []models.ThreadRef) error {
+	index, err := jsonExp.LoadThreadIndex()
+	if err != nil {
+		return fmt.Errorf("could not load thread index to save retry state: %w", err)
+	}
+	if index == nil {
+		return errors.New("could not save thread retry state: thread index is missing")
 	}
 
-	fmt.Printf("\nExport complete: %s (%s)\n", cmd.Output, time.Since(startTime).Round(time.Second))
+	retryByUUID := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		retryByUUID[ref.UUID] = ref.RetryRequired
+	}
+	for i := range index.Threads {
+		if retry, ok := retryByUUID[index.Threads[i].UUID]; ok {
+			index.Threads[i].RetryRequired = retry
+		}
+	}
+	if err := jsonExp.SaveThreadIndex(index); err != nil {
+		return fmt.Errorf("could not save thread retry state: %w", err)
+	}
 	return nil
 }
 
@@ -348,14 +404,18 @@ func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	return refs
 }
 
+type getThreadFunc func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error)
+
 // fetchThreadDetails fetches full details for incomplete or changed threads.
-func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter, refs []models.ThreadRef) ([]models.Thread, error) {
+func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JSONExporter, refs []models.ThreadRef, getThread getThreadFunc) ([]models.Thread, []models.ThreadExportFailure, error) {
 	// Determine which threads need fetching
-	var missing []models.ThreadRef
-	for _, ref := range refs {
+	var missing []int
+	failuresByUUID := make(map[string]models.ThreadExportFailure)
+	for i, ref := range refs {
 		cached, err := jsonExp.LoadCompleteThread(ref.UUID)
 		if needsThreadFetch(cmd.Refresh, ref, cached, err) {
-			missing = append(missing, ref)
+			missing = append(missing, i)
+			refs[i].RetryRequired = true
 		}
 	}
 
@@ -367,11 +427,12 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 			progressbar.OptionSetWidth(40),
 		)
 
-		for _, ref := range missing {
+		for _, refIndex := range missing {
+			ref := &refs[refIndex]
 			select {
 			case <-ctx.Done():
 				fmt.Printf("\nInterrupted. Progress saved — resume by running the same command.\n")
-				return nil, ctx.Err()
+				return nil, orderedThreadFailures(refs, failuresByUUID), ctx.Err()
 			default:
 			}
 
@@ -386,9 +447,13 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 
 			onPage := func(t *models.Thread) error { return jsonExp.ExportThread(t) }
 
-			full, err := api.GetThread(ctx, c, ref.UUID, resume, onPage)
+			full, err := getThread(ctx, ref.UUID, resume, onPage)
 			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, orderedThreadFailures(refs, failuresByUUID), err
+				}
 				fmt.Fprintf(os.Stderr, "\n  Warning: could not fetch thread %s: %v\n", ref.UUID, err)
+				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageFetch, Error: err.Error()}
 				_ = bar.Add(1)
 				continue
 			}
@@ -396,6 +461,9 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 			// Write to disk immediately
 			if err := jsonExp.ExportThread(full); err != nil {
 				fmt.Fprintf(os.Stderr, "\n  Warning: could not write thread %s: %v\n", ref.UUID, err)
+				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageWrite, Error: err.Error()}
+			} else {
+				ref.RetryRequired = false
 			}
 			_ = bar.Add(1)
 		}
@@ -406,15 +474,30 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, c *client.Client, 
 
 	// Load all threads from disk
 	threads := make([]models.Thread, 0, len(refs))
-	for _, ref := range refs {
+	for i, ref := range refs {
+		if _, failed := failuresByUUID[ref.UUID]; failed {
+			continue
+		}
 		t, err := jsonExp.LoadCompleteThread(ref.UUID)
 		if err != nil {
-			continue // skip threads that failed to fetch
+			failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageLoad, Error: err.Error()}
+			refs[i].RetryRequired = true
+			continue
 		}
 		threads = append(threads, *t)
 	}
 
-	return threads, nil
+	return threads, orderedThreadFailures(refs, failuresByUUID), nil
+}
+
+func orderedThreadFailures(refs []models.ThreadRef, failuresByUUID map[string]models.ThreadExportFailure) []models.ThreadExportFailure {
+	failures := make([]models.ThreadExportFailure, 0, len(failuresByUUID))
+	for _, ref := range refs {
+		if failure, ok := failuresByUUID[ref.UUID]; ok {
+			failures = append(failures, failure)
+		}
+	}
+	return failures
 }
 
 // resumePoint reports the checkpoint an interrupted fetch should continue
@@ -428,19 +511,21 @@ func resumePoint(refresh bool, partial *models.Thread) *models.Thread {
 }
 
 func needsThreadFetch(refresh bool, ref models.ThreadRef, cached *models.Thread, err error) bool {
-	if err != nil || cached == nil {
+	if ref.RetryRequired || err != nil || cached == nil {
 		return true
 	}
 	return refresh && (ref.UpdatedAt.IsZero() || ref.PreviousUpdatedAt.IsZero() || ref.UpdatedAt.After(ref.PreviousUpdatedAt))
 }
 
 func attachPreviousUpdatedAt(refs []models.ThreadRef, previous []models.ThreadRef) {
-	previousByUUID := make(map[string]time.Time, len(previous))
+	previousByUUID := make(map[string]models.ThreadRef, len(previous))
 	for _, ref := range previous {
-		previousByUUID[ref.UUID] = ref.UpdatedAt
+		previousByUUID[ref.UUID] = ref
 	}
 	for i := range refs {
-		refs[i].PreviousUpdatedAt = previousByUUID[refs[i].UUID]
+		previousRef := previousByUUID[refs[i].UUID]
+		refs[i].PreviousUpdatedAt = previousRef.UpdatedAt
+		refs[i].RetryRequired = previousRef.RetryRequired
 	}
 }
 

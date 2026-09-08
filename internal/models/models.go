@@ -121,12 +121,29 @@ type Account struct {
 
 // ExportManifest holds metadata about an export run.
 type ExportManifest struct {
-	Version     string            `json:"version"`
-	ExportedAt  time.Time         `json:"exported_at"`
-	Formats     []string          `json:"formats"`
-	Counts      ExportCounts      `json:"counts"`
-	ThreadIndex map[string]string `json:"thread_index,omitempty"` // uuid -> slug
+	Version         string                `json:"version"`
+	ExportedAt      time.Time             `json:"exported_at"`
+	Formats         []string              `json:"formats"`
+	Counts          ExportCounts          `json:"counts"`
+	ThreadsComplete bool                  `json:"threads_complete"`
+	ExpectedThreads int                   `json:"expected_threads"`
+	FailedThreads   []ThreadExportFailure `json:"failed_threads,omitempty"`
+	ThreadIndex     map[string]string     `json:"thread_index,omitempty"` // uuid -> slug
 }
+
+// ThreadExportFailure identifies a thread that could not be exported during a run.
+type ThreadExportFailure struct {
+	UUID  string `json:"uuid"`
+	Title string `json:"title,omitempty"`
+	Stage string `json:"stage"`
+	Error string `json:"error"`
+}
+
+const (
+	ThreadExportStageFetch = "fetch"
+	ThreadExportStageWrite = "write"
+	ThreadExportStageLoad  = "load"
+)
 
 // ExportCounts holds the number of each item type exported.
 type ExportCounts struct {
@@ -151,6 +168,7 @@ type ThreadRef struct {
 	Title             string    `json:"title"`
 	SpaceUUID         string    `json:"space_uuid,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	RetryRequired     bool      `json:"retry_required,omitempty"`
 	PreviousUpdatedAt time.Time `json:"-"`
 }
 
