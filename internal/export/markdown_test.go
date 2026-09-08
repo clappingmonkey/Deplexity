@@ -38,7 +38,7 @@ func TestMarkdownExportThread(t *testing.T) {
 		t.Fatalf("ExportThread: %v", err)
 	}
 
-	path := filepath.Join(tmpDir, "threads", "test-thread", "thread.md")
+	path := filepath.Join(tmpDir, "threads", threadDirName(thread.Slug, thread.UUID), "thread.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)

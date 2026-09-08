@@ -93,12 +93,26 @@ func spaceIdentitySuffix(identity string) string {
 	return safe + "-" + fmt.Sprintf("%x", sum[:])
 }
 
-// threadSlug returns the slug (or UUID fallback) for a thread's directory name.
-func threadSlug(t *models.Thread) string {
-	if t.Slug != "" {
-		return t.Slug
+// threadDirName returns a stable, collision-safe directory component. Slugs are
+// readable metadata; the UUID hash remains the filesystem identity.
+func threadDirName(slug, uuid string) string {
+	baseValue := slug
+	if baseValue == "" {
+		baseValue = uuid
 	}
-	return t.UUID
+	base := sanitizeFilename(baseValue)
+	if base == "" || base == "." || base == ".." {
+		base = "thread"
+	}
+	suffix := spaceIdentitySuffix(uuid)
+	maxBaseLength := maxFilenameLength - len(suffix) - 1
+	if len(base) > maxBaseLength {
+		base = strings.TrimRight(base[:maxBaseLength], ".-")
+	}
+	if base == "" {
+		base = "thread"
+	}
+	return base + "-" + suffix
 }
 
 // skillFilenames returns a collision-free ".md" filename for each skill, keyed

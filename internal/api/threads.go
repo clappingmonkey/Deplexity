@@ -173,6 +173,7 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 	seenCursors := make(map[string]bool)
 
 	if resume != nil && !resume.Complete && resume.NextCursor != "" {
+		thread.Slug = resume.Slug
 		thread.Title = resume.Title
 		thread.CreatedAt = resume.CreatedAt
 		thread.UpdatedAt = resume.UpdatedAt

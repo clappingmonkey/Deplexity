@@ -146,13 +146,13 @@ deplexity-export/
 │       ├── skills/            # Attached skills' SKILL.md bodies (referenced by space.json)
 │       │   └── <skill-name>.md
 │       └── threads/           # Self-contained copies of this space's threads
-│           └── <thread-slug>/
+│           └── <thread-slug>-<thread-id>/
 │               ├── thread.json
 │               ├── thread.md
 │               ├── thread.pdf
 │               └── sources.json
 └── threads/                   # Canonical flat list of all threads
-    └── <thread-slug>/
+    └── <thread-slug>-<thread-id>/
         ├── thread.json
         ├── thread.md
         ├── thread.pdf
@@ -160,6 +160,14 @@ deplexity-export/
 ```
 
 Each space folder is self-contained — you can ZIP and share a single space without needing the top-level `threads/` directory.
+
+Thread slugs from Perplexity are preserved in JSON metadata and the manifest. On
+disk, every thread directory also includes a stable UUID-derived suffix so equal or
+normalized slugs cannot overwrite each other. Existing UUID-only thread directories
+remain readable and are left untouched when the canonical path is written. An export
+created before its cached thread index is refreshed can temporarily add an
+identity-suffixed UUID path before the final slug-based path is known; these older
+paths are also retained rather than deleting backup data automatically.
 
 Space exports capture each space's full context: its custom AI instructions, description, suggested queries, primers, and any attached skills. Skill definitions are written as `SKILL.md` files under `spaces/<space-name>-<space-id>/skills/` and referenced from `space.json`. The stable ID suffix prevents different spaces whose names normalize to the same filesystem name from overwriting each other. Older name-only space directories are left untouched when exporting into an existing output directory.
 

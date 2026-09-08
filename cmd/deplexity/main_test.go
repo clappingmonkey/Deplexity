@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -156,7 +157,7 @@ func TestFetchThreadIndexReListsIncompleteCacheFromStart(t *testing.T) {
 	previousUpdatedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	previous := &models.ThreadIndex{
 		Threads: []models.ThreadRef{
-			{UUID: "old-1", UpdatedAt: previousUpdatedAt, RetryRequired: true},
+			{UUID: "old-1", Slug: "previous-old-slug", UpdatedAt: previousUpdatedAt, RetryRequired: true},
 			{UUID: "stale"},
 		},
 		Total:    2,
@@ -173,9 +174,9 @@ func TestFetchThreadIndexReListsIncompleteCacheFromStart(t *testing.T) {
 			onProgress(3)
 		}
 		return []models.Thread{
-			{UUID: "promoted", Title: "Promoted"},
-			{UUID: "old-1", Title: "Old"},
-			{UUID: "tail", Title: "Tail"},
+			{UUID: "promoted", Slug: "promoted-slug", Title: "Promoted"},
+			{UUID: "old-1", Slug: "fresh-old-slug", Title: "Old"},
+			{UUID: "tail", Slug: "tail-slug", Title: "Tail"},
 		}, nil
 	}
 
@@ -191,10 +192,9 @@ func TestFetchThreadIndexReListsIncompleteCacheFromStart(t *testing.T) {
 	if got := threadRefUUIDs(refs); !reflect.DeepEqual(got, wantOrder) {
 		t.Fatalf("refs = %v, want %v", got, wantOrder)
 	}
-	if !refs[1].RetryRequired || !refs[1].PreviousUpdatedAt.Equal(previousUpdatedAt) {
+	if !refs[1].RetryRequired || !refs[1].PreviousUpdatedAt.Equal(previousUpdatedAt) || refs[1].PreviousSlug != "previous-old-slug" {
 		t.Fatalf("old-1 metadata = %#v, want retry and previous timestamp preserved", refs[1])
 	}
-
 	reloaded, err := jsonExp.LoadThreadIndex()
 	if err != nil {
 		t.Fatalf("LoadThreadIndex: %v", err)
@@ -205,12 +205,15 @@ func TestFetchThreadIndexReListsIncompleteCacheFromStart(t *testing.T) {
 	if got := threadRefUUIDs(reloaded.Threads); !reflect.DeepEqual(got, wantOrder) {
 		t.Fatalf("persisted order = %v, want %v", got, wantOrder)
 	}
+	if refs[1].Slug != "fresh-old-slug" || reloaded.Threads[1].Slug != "fresh-old-slug" {
+		t.Fatalf("fresh slug was not persisted: refs=%#v index=%#v", refs[1], reloaded.Threads[1])
+	}
 }
 
 func TestFetchThreadIndexServesCompleteCacheWithoutListing(t *testing.T) {
 	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
 	index := &models.ThreadIndex{
-		Threads:   []models.ThreadRef{{UUID: "cached"}},
+		Threads:   []models.ThreadRef{{UUID: "cached", Slug: "cached-slug"}},
 		Total:     1,
 		FetchedAt: time.Now().UTC(),
 		Complete:  true,
@@ -230,6 +233,9 @@ func TestFetchThreadIndexServesCompleteCacheWithoutListing(t *testing.T) {
 	}
 	if got := threadRefUUIDs(refs); !reflect.DeepEqual(got, []string{"cached"}) {
 		t.Fatalf("refs = %v, want cached", got)
+	}
+	if refs[0].Slug != "cached-slug" {
+		t.Errorf("cached slug = %q, want cached-slug", refs[0].Slug)
 	}
 }
 
@@ -278,7 +284,7 @@ func TestFetchThreadIndexInterruptedRelistRetainsPriorMetadata(t *testing.T) {
 	previous := &models.ThreadIndex{
 		Threads: []models.ThreadRef{
 			{UUID: "old-head"},
-			{UUID: "deep-retry", RetryRequired: true},
+			{UUID: "deep-retry", Slug: "deep-slug", RetryRequired: true},
 		},
 		Total:    2,
 		Complete: false,
@@ -308,6 +314,9 @@ func TestFetchThreadIndexInterruptedRelistRetainsPriorMetadata(t *testing.T) {
 	}
 	if !reloaded.Threads[2].RetryRequired {
 		t.Fatal("unseen prior retry metadata was lost")
+	}
+	if reloaded.Threads[2].Slug != "deep-slug" {
+		t.Errorf("unseen prior slug = %q, want deep-slug", reloaded.Threads[2].Slug)
 	}
 }
 
@@ -379,6 +388,106 @@ func TestFetchThreadDetailsTracksFailuresAndKeepsSuccessfulThreads(t *testing.T)
 	}
 	if failures[0].UUID != "thread-2" || failures[0].Title != "Second" || failures[0].Stage != models.ThreadExportStageFetch {
 		t.Errorf("failure = %#v, want thread-2 fetch failure", failures[0])
+	}
+}
+
+func TestFetchThreadDetailsPreservesSlugThroughCheckpointAndManifest(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "human-readable-slug", Title: "List title", SpaceUUID: "space-1"}
+	fetch := func(_ context.Context, uuid string, _ *models.Thread, onPage func(*models.Thread) error) (*models.Thread, error) {
+		checkpoint := &models.Thread{UUID: uuid, Slug: uuid, NextCursor: "next"}
+		if err := onPage(checkpoint); err != nil {
+			return nil, err
+		}
+		return &models.Thread{UUID: uuid, Slug: uuid, Complete: true}, nil
+	}
+
+	cmd := &ExportCmd{}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, []models.ThreadRef{ref}, fetch)
+	if err != nil {
+		t.Fatalf("fetchThreadDetails: %v", err)
+	}
+	if len(failures) != 0 || len(threads) != 1 {
+		t.Fatalf("threads=%#v failures=%#v", threads, failures)
+	}
+	got := threads[0]
+	if got.Slug != ref.Slug || got.SpaceUUID != ref.SpaceUUID || got.Title != ref.Title {
+		t.Errorf("thread metadata = %#v, want list metadata", got)
+	}
+	loaded, err := jsonExp.LoadCompleteThread(ref)
+	if err != nil {
+		t.Fatalf("LoadCompleteThread: %v", err)
+	}
+	if loaded.Slug != ref.Slug {
+		t.Errorf("cached slug = %q, want %q", loaded.Slug, ref.Slug)
+	}
+	manifest := buildManifest([]string{"json"}, threads, []models.ThreadRef{ref}, nil, nil, nil)
+	if manifest.ThreadIndex[ref.UUID] != ref.Slug {
+		t.Errorf("manifest index = %#v, want original list slug", manifest.ThreadIndex)
+	}
+}
+
+func TestFetchThreadDetailsMigratesLegacyCacheWithoutFetch(t *testing.T) {
+	dir := t.TempDir()
+	legacyDir := filepath.Join(dir, "threads", "thread-1")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatalf("create legacy directory: %v", err)
+	}
+	legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy cache: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "thread.json"), data, 0600); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "human-readable-slug"}
+	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		t.Fatal("fetch called for complete legacy cache")
+		return nil, nil
+	}
+
+	cmd := &ExportCmd{}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, []models.ThreadRef{ref}, fetch)
+	if err != nil {
+		t.Fatalf("fetchThreadDetails: %v", err)
+	}
+	if len(failures) != 0 || len(threads) != 1 || threads[0].Slug != ref.Slug {
+		t.Fatalf("threads=%#v failures=%#v", threads, failures)
+	}
+	if !jsonExp.HasCanonicalThread(ref) {
+		t.Fatal("legacy cache was not written to the canonical path")
+	}
+	if _, err := os.Stat(filepath.Join(legacyDir, "thread.json")); err != nil {
+		t.Errorf("legacy cache was removed: %v", err)
+	}
+}
+
+func TestFetchThreadDetailsRehomesCacheAfterSlugChange(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	old := &models.Thread{UUID: "thread-1", Slug: "old-slug", Complete: true}
+	if err := jsonExp.ExportThread(old); err != nil {
+		t.Fatalf("seed old canonical cache: %v", err)
+	}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "new-slug", PreviousSlug: "old-slug"}
+	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		t.Fatal("fetch called for complete previous-slug cache")
+		return nil, nil
+	}
+
+	cmd := &ExportCmd{}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, []models.ThreadRef{ref}, fetch)
+	if err != nil {
+		t.Fatalf("fetchThreadDetails: %v", err)
+	}
+	if len(failures) != 0 || len(threads) != 1 || threads[0].Slug != ref.Slug {
+		t.Fatalf("threads=%#v failures=%#v", threads, failures)
+	}
+	if !jsonExp.HasCanonicalThread(ref) {
+		t.Fatal("previous-slug cache was not written to the current canonical path")
 	}
 }
 
@@ -570,7 +679,8 @@ func TestBuildManifestReportsThreadCompleteness(t *testing.T) {
 	failures := []models.ThreadExportFailure{{UUID: "thread-2", Stage: models.ThreadExportStageFetch, Error: "failed"}}
 	account := &models.Account{GlobalSkills: []models.Skill{{ID: "skill-1"}}}
 
-	manifest := buildManifest([]string{"json"}, threads, []models.Space{{UUID: "space-1"}}, account, 2, failures)
+	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "first"}, {UUID: "thread-2", Slug: "failed-slug"}}
+	manifest := buildManifest([]string{"json"}, threads, refs, []models.Space{{UUID: "space-1"}}, account, failures)
 	if manifest.ThreadsComplete {
 		t.Fatal("ThreadsComplete = true, want false")
 	}
@@ -586,8 +696,11 @@ func TestBuildManifestReportsThreadCompleteness(t *testing.T) {
 	if manifest.ThreadIndex["thread-1"] != "first" {
 		t.Errorf("ThreadIndex = %#v, want exported thread", manifest.ThreadIndex)
 	}
+	if manifest.ThreadIndex["thread-2"] != "failed-slug" {
+		t.Errorf("ThreadIndex = %#v, want failed thread list slug preserved", manifest.ThreadIndex)
+	}
 
-	complete := buildManifest([]string{"json"}, nil, nil, nil, 0, nil)
+	complete := buildManifest([]string{"json"}, nil, nil, nil, nil, nil)
 	if !complete.ThreadsComplete || complete.ExpectedThreads != 0 {
 		t.Errorf("no-thread manifest = %#v, want complete with zero expected threads", complete)
 	}

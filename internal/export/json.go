@@ -45,29 +45,59 @@ func (e *JSONExporter) LoadThreadIndex() (*models.ThreadIndex, error) {
 
 // LoadCompleteThread reads a thread only when its detail fetch completed.
 // Thread JSON written by earlier versions has no complete field and is retried.
-func (e *JSONExporter) LoadCompleteThread(uuid string) (*models.Thread, error) {
-	thread, err := e.LoadThread(uuid)
+func (e *JSONExporter) LoadCompleteThread(ref models.ThreadRef) (*models.Thread, error) {
+	thread, err := e.LoadThread(ref)
 	if err != nil {
 		return nil, err
 	}
 	if !thread.Complete {
-		return nil, fmt.Errorf("thread %s is incomplete", uuid)
+		return nil, fmt.Errorf("thread %s is incomplete", ref.UUID)
 	}
 	return thread, nil
 }
 
 // LoadThread reads a single thread from its JSON file on disk.
-func (e *JSONExporter) LoadThread(uuid string) (*models.Thread, error) {
-	path := filepath.Join(e.OutputDir, "threads", sanitizeFilename(uuid), "thread.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+func (e *JSONExporter) LoadThread(ref models.ThreadRef) (*models.Thread, error) {
+	paths := []string{
+		filepath.Join(e.OutputDir, "threads", threadDirName(ref.Slug, ref.UUID), "thread.json"),
 	}
-	var thread models.Thread
-	if err := json.Unmarshal(data, &thread); err != nil {
-		return nil, err
+	if ref.PreviousSlug != "" && ref.PreviousSlug != ref.Slug {
+		paths = append(paths, filepath.Join(e.OutputDir, "threads", threadDirName(ref.PreviousSlug, ref.UUID), "thread.json"))
 	}
-	return &thread, nil
+	if ref.Slug != "" {
+		paths = append(paths, filepath.Join(e.OutputDir, "threads", threadDirName("", ref.UUID), "thread.json"))
+	}
+	paths = append(paths, filepath.Join(e.OutputDir, "threads", sanitizeFilename(ref.UUID), "thread.json"))
+	var lastErr error
+	for _, threadPath := range paths {
+		data, err := os.ReadFile(threadPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+			lastErr = err
+			continue
+		}
+		var thread models.Thread
+		if err := json.Unmarshal(data, &thread); err != nil {
+			return nil, err
+		}
+		if thread.UUID != ref.UUID {
+			lastErr = fmt.Errorf("thread cache %s contains UUID %q, want %q", threadPath, thread.UUID, ref.UUID)
+			continue
+		}
+		return &thread, nil
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("thread %s was not found in a matching cache: %w", ref.UUID, lastErr)
+	}
+	return nil, fmt.Errorf("thread %s has no cache paths", ref.UUID)
+}
+
+// HasCanonicalThread reports whether the current slug-and-UUID cache path exists.
+func (e *JSONExporter) HasCanonicalThread(ref models.ThreadRef) bool {
+	_, err := os.Stat(filepath.Join(e.OutputDir, "threads", threadDirName(ref.Slug, ref.UUID), "thread.json"))
+	return err == nil
 }
 
 // ExportThread writes a single thread as a JSON file.
@@ -196,7 +226,7 @@ func (e *JSONExporter) ExportSpaces(ctx context.Context, spaces []models.Space, 
 			if thread == nil {
 				continue
 			}
-			threadDir := filepath.Join(spaceDir, "threads", sanitizeFilename(threadSlug(thread)))
+			threadDir := filepath.Join(spaceDir, "threads", threadDirName(thread.Slug, thread.UUID))
 			if err := os.MkdirAll(threadDir, 0755); err != nil {
 				return fmt.Errorf("could not create space thread directory: %w", err)
 			}
@@ -259,7 +289,7 @@ func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
 
 // threadDir returns the output directory for a thread.
 func (e *JSONExporter) threadDir(thread *models.Thread) string {
-	return filepath.Join(e.OutputDir, "threads", sanitizeFilename(threadSlug(thread)))
+	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID))
 }
 
 // writeSpaceSkills writes each skill's SKILL.md body into a skills/ subfolder
