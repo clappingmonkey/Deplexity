@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
@@ -16,13 +15,19 @@ type getter interface {
 	Get(context.Context, string, any) error
 }
 
-// ListThreadsFrom fetches threads starting at a given offset via POST /rest/thread/list_ask_threads.
+type poster interface {
+	Post(context.Context, string, any, any) error
+}
+
+// ListThreads fetches all user threads via POST /rest/thread/list_ask_threads.
 // Stops when a page returns fewer than limit results (end of data) or when all results are
 // duplicates (safety net for API recycling behavior).
-func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, seenUUIDs map[string]bool, onProgress func(int)) ([]models.Thread, error) {
+// If onProgress is non-nil, it is called after each page with the total count so far.
+func ListThreads(ctx context.Context, c poster, onProgress func(int)) ([]models.Thread, error) {
 	var allThreads []models.Thread
-	offset := startOffset
+	offset := 0
 	limit := 20
+	seenUUIDs := make(map[string]bool)
 
 	path := fmt.Sprintf("/rest/thread/list_ask_threads?version=%s&source=default", apiVersion)
 
@@ -74,7 +79,7 @@ func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, see
 		}
 
 		if onProgress != nil {
-			onProgress(startOffset + len(allThreads))
+			onProgress(len(allThreads))
 		}
 
 		// If no new threads were found, the API is recycling — stop.
@@ -91,12 +96,6 @@ func ListThreadsFrom(ctx context.Context, c *client.Client, startOffset int, see
 	}
 
 	return allThreads, nil
-}
-
-// ListThreads fetches all user threads via POST /rest/thread/list_ask_threads.
-// If onProgress is non-nil, it is called after each page with the total count so far.
-func ListThreads(ctx context.Context, c *client.Client, onProgress func(int)) ([]models.Thread, error) {
-	return ListThreadsFrom(ctx, c, 0, make(map[string]bool), onProgress)
 }
 
 // threadPagePath builds the detail endpoint URL for a single page of a thread.

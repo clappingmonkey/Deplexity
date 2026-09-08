@@ -112,7 +112,10 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	// === Phase 1: Thread index (list all UUIDs) ===
 	var threadRefs []models.ThreadRef
 	if cmd.Threads {
-		threadRefs, err = cmd.fetchThreadIndex(ctx, c, jsonExp)
+		listThreads := func(ctx context.Context, onProgress func(int)) ([]models.Thread, error) {
+			return api.ListThreads(ctx, c, onProgress)
+		}
+		threadRefs, err = cmd.fetchThreadIndex(ctx, jsonExp, listThreads)
 		if err != nil {
 			return err
 		}
@@ -281,8 +284,10 @@ func persistThreadRetryState(jsonExp *export.JSONExporter, refs []models.ThreadR
 	return nil
 }
 
-// fetchThreadIndex loads or fetches the thread UUID list (resumable).
-func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter) ([]models.ThreadRef, error) {
+type listThreadsFunc func(context.Context, func(int)) ([]models.Thread, error)
+
+// fetchThreadIndex loads a complete cache or safely re-lists from the beginning.
+func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, jsonExp *export.JSONExporter, listThreads listThreadsFunc) ([]models.ThreadRef, error) {
 	// Check cache
 	if !cmd.Refresh {
 		index, err := jsonExp.LoadThreadIndex()
@@ -293,19 +298,16 @@ func (cmd *ExportCmd) fetchThreadIndex(ctx context.Context, c *client.Client, js
 			fmt.Printf("Using cached thread list (%d threads, fetched %s ago)\n", index.Total, time.Since(index.FetchedAt).Round(time.Minute))
 			return index.Threads, nil
 		}
-		// Resume from incomplete index
 		if index != nil && !index.Complete && index.Total > 0 {
-			fmt.Printf("Resuming thread list from %d...", index.Total)
-			return cmd.continueListThreads(ctx, c, jsonExp, index)
+			fmt.Printf("Cached thread list is incomplete (%d found); re-listing from the start because thread order may have changed\n", index.Total)
 		}
 	}
 
-	// Fresh fetch
-	return cmd.freshListThreads(ctx, c, jsonExp)
+	return cmd.freshListThreads(ctx, jsonExp, listThreads)
 }
 
-// freshListThreads fetches all threads from scratch, saving periodically.
-func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter) ([]models.ThreadRef, error) {
+// freshListThreads fetches all threads from scratch and saves partial progress.
+func (cmd *ExportCmd) freshListThreads(ctx context.Context, jsonExp *export.JSONExporter, listThreads listThreadsFunc) ([]models.ThreadRef, error) {
 	fmt.Print("Fetching thread list...")
 
 	index := &models.ThreadIndex{Complete: false}
@@ -315,7 +317,7 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 		previous = nil
 	}
 
-	threads, err := api.ListThreads(ctx, c, func(n int) {
+	threads, err := listThreads(ctx, func(n int) {
 		fmt.Printf("\rFetching thread list... %d", n)
 	})
 
@@ -324,12 +326,14 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 	if previous != nil {
 		attachPreviousUpdatedAt(refs, previous.Threads)
 	}
-	index.Threads = refs
-	index.Total = len(refs)
 	if err != nil {
+		index.Threads = mergeIncompleteThreadRefs(refs, previous)
+		index.Total = len(index.Threads)
 		_ = jsonExp.SaveThreadIndex(index)
 		return nil, err
 	}
+	index.Threads = refs
+	index.Total = len(refs)
 
 	fmt.Printf("\rFetching thread list... %d threads found\n", len(threads))
 
@@ -338,6 +342,29 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, c *client.Client, js
 	}
 
 	return refs, nil
+}
+
+// mergeIncompleteThreadRefs keeps the current scan prefix first and retains
+// unseen prior refs only as metadata checkpoints. Incomplete indexes are never
+// served as complete data; the next run always re-lists from offset zero.
+func mergeIncompleteThreadRefs(refs []models.ThreadRef, previous *models.ThreadIndex) []models.ThreadRef {
+	if previous == nil {
+		return refs
+	}
+
+	merged := make([]models.ThreadRef, 0, len(refs)+len(previous.Threads))
+	merged = append(merged, refs...)
+	seen := make(map[string]bool, len(merged))
+	for _, ref := range merged {
+		seen[ref.UUID] = true
+	}
+	for _, ref := range previous.Threads {
+		if !seen[ref.UUID] {
+			merged = append(merged, ref)
+			seen[ref.UUID] = true
+		}
+	}
+	return merged
 }
 
 // indexServableFromCache reports whether a cached thread index can be reused
@@ -360,40 +387,6 @@ func finalizeIndex(jsonExp *export.JSONExporter, index *models.ThreadIndex) erro
 	index.FetchedAt = time.Now().UTC()
 	index.Complete = index.Total > 0
 	return jsonExp.SaveThreadIndex(index)
-}
-
-// continueListThreads resumes listing from a partial index.
-func (cmd *ExportCmd) continueListThreads(ctx context.Context, c *client.Client, jsonExp *export.JSONExporter, index *models.ThreadIndex) ([]models.ThreadRef, error) {
-	startOffset := index.Total
-
-	// Build seen set from existing threads to detect duplicates/recycling.
-	seenUUIDs := make(map[string]bool, len(index.Threads))
-	for _, ref := range index.Threads {
-		seenUUIDs[ref.UUID] = true
-	}
-
-	additional, err := api.ListThreadsFrom(ctx, c, startOffset, seenUUIDs, func(n int) {
-		fmt.Printf("\rResuming thread list... %d", n)
-	})
-
-	// Merge results
-	for _, t := range additional {
-		index.Threads = append(index.Threads, models.ThreadRef{UUID: t.UUID, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
-	}
-	index.Total = len(index.Threads)
-
-	if err != nil {
-		_ = jsonExp.SaveThreadIndex(index)
-		return nil, err
-	}
-
-	fmt.Printf("\rFetching thread list... %d threads found\n", len(index.Threads))
-
-	if err := finalizeIndex(jsonExp, index); err != nil {
-		return nil, err
-	}
-
-	return index.Threads, nil
 }
 
 func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {

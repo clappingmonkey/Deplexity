@@ -114,7 +114,7 @@ deplexity export -f pdf --pdf-workers 4
 
 Export runs in two phases:
 
-1. **Phase 1 — Index**: Fetches the list of all threads and caches it in `thread_index.json`. If interrupted, re-running `deplexity export` resumes from the cached index.
+1. **Phase 1 — Index**: Fetches the list of all threads and caches it in `thread_index.json`. If listing is interrupted, the next run re-lists from the beginning and uses the incomplete cache only to preserve per-thread retry metadata. The upstream list is newest-first and can reorder, so a saved numeric offset is not a safe resume point.
 2. **Phase 2 — Details**: Fetches full content for each thread. Already-fetched threads are skipped automatically.
 
 Use `--refresh` to force re-fetching the thread index (e.g., after new conversations).

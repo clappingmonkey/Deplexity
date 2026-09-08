@@ -32,7 +32,7 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 ## Architecture
 
 - `internal/api/types.go` — **raw API response structs** (JSON tags match Perplexity's undocumented internal API, verified against live responses May 2026, API v2.18).
-- `internal/api/threads.go` — `ListThreads`, `ListThreadsFrom` (POST `list_ask_threads` with pagination, dual stop condition), `GetThread`.
+- `internal/api/threads.go` — `ListThreads` (POST `list_ask_threads` with pagination and dual stop condition), `GetThread`.
 - `internal/api/collections.go` — `ListCollections` via `GET /rest/spaces`, then always-on fail-soft enrichment: `GetCollection` (per-space instructions/description/suggested_queries/primers) and `ListSpaceSkills`/`GetSkillDetail` (collection-scoped skills + SKILL.md body). `ListSpaceSkills` omits `collection_uuid` when the UUID is empty (used to list account-wide global skills).
 - `internal/api/skills.go` — account-wide skills. `enrichSkill` (shared fail-soft helper: fetches detail + downloads SKILL.md body, used by both space and global paths), `ListGlobalSkills` (calls `ListSpaceSkills("")`, keeps only `scope=="global"`), and `GetAccount` (wraps global skills in `models.Account`). Global skills apply to every request account-wide, so they are exported **once** at the top level, not per space.
 - `internal/api/user.go` — `GetUser` via `GET /api/user`.
@@ -83,7 +83,7 @@ Answer content is in `entries[].blocks[]` where `intended_usage == "ask_text_0_m
 
 ## Export Flow
 
-1. **Phase 1 — Index**: `POST /rest/thread/list_ask_threads` with pagination (limit=20, ascending=false). Dual stop condition: `len(response) < limit` (primary) + all-duplicates (safety net). Result cached in `thread_index.json` with `Complete: true` flag.
+1. **Phase 1 — Index**: `POST /rest/thread/list_ask_threads` with pagination (limit=20, ascending=false). Dual stop condition: `len(response) < limit` (primary) + current-run all-duplicates (safety net). Result cached in `thread_index.json` with `Complete: true` flag. An incomplete index is never resumed from its count as an offset because the newest-first list can reorder between runs; the next run re-lists from offset 0 and carries retry metadata forward by UUID.
 2. **Phase 2 — Details**: `GET /rest/thread/{uuid}` for each thread. Skips threads already fetched on disk. Ordinary per-thread fetch/write failures preserve and render successful threads, but `manifest.json` records `threads_complete: false`, `expected_threads`, and ordered `failed_threads`, and the command exits non-zero after writing the manifest. Cancellation/deadline errors abort immediately and take precedence over accumulated failures. A failed `--refresh` must not count a stale cached thread as a current success. Adaptive rate limiting: delay doubles after 429, halves after 20 consecutive successes.
 3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF. Write threads to `threads/<slug>/` (canonical flat list). Copy thread files into `spaces/<name>/threads/<slug>/` so each space folder is self-contained. Account-wide global skills are written **once** under `account/`: `account/account.json` (JSON) + `account/global-skills.md` (Markdown), with each skill body in `account/skills/<name>.md`. They are not duplicated per space.
 

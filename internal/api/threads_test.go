@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,28 @@ type threadGetter struct {
 	responses []ThreadDetailResponse
 	calls     int
 	paths     []string
+}
+
+type threadPoster struct {
+	responses []ThreadListResponse
+	errors    []error
+	calls     int
+	offsets   []int
+}
+
+func (p *threadPoster) Post(_ context.Context, _ string, body any, dst any) error {
+	req := body.(ThreadListRequest)
+	p.offsets = append(p.offsets, req.Offset)
+	if p.calls >= len(p.responses) {
+		return errors.New("unexpected list request")
+	}
+	call := p.calls
+	p.calls++
+	if call < len(p.errors) && p.errors[call] != nil {
+		return p.errors[call]
+	}
+	*dst.(*ThreadListResponse) = p.responses[call]
+	return nil
 }
 
 func (g *threadGetter) Get(_ context.Context, path string, dst any) error {
@@ -87,6 +111,74 @@ func TestThreadListItemMapping(t *testing.T) {
 	}
 	if raw.Title != "Test Thread" {
 		t.Errorf("unexpected Title: %s", raw.Title)
+	}
+}
+
+func TestListThreadsStartsAtZeroAndAdvancesByPageLength(t *testing.T) {
+	first := make(ThreadListResponse, 20)
+	for i := range first {
+		first[i] = ThreadListItem{UUID: fmt.Sprintf("thread-%d", i)}
+	}
+	poster := &threadPoster{responses: []ThreadListResponse{
+		first,
+		{{UUID: "thread-20"}},
+	}}
+	var progress []int
+
+	threads, err := ListThreads(context.Background(), poster, func(n int) {
+		progress = append(progress, n)
+	})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 21 {
+		t.Fatalf("got %d threads, want 21", len(threads))
+	}
+	if !reflect.DeepEqual(poster.offsets, []int{0, 20}) {
+		t.Errorf("offsets = %v, want [0 20]", poster.offsets)
+	}
+	if !reflect.DeepEqual(progress, []int{20, 21}) {
+		t.Errorf("progress = %v, want [20 21]", progress)
+	}
+}
+
+func TestListThreadsStopsOnCurrentRunDuplicatePage(t *testing.T) {
+	first := make(ThreadListResponse, 20)
+	for i := range first {
+		first[i] = ThreadListItem{UUID: fmt.Sprintf("thread-%d", i)}
+	}
+	duplicate := append(ThreadListResponse(nil), first...)
+	poster := &threadPoster{responses: []ThreadListResponse{first, duplicate}}
+
+	threads, err := ListThreads(context.Background(), poster, nil)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 20 {
+		t.Fatalf("got %d threads, want 20 unique threads", len(threads))
+	}
+	if poster.calls != 2 {
+		t.Fatalf("calls = %d, want 2", poster.calls)
+	}
+}
+
+func TestListThreadsReturnsPartialResultsOnPageError(t *testing.T) {
+	first := make(ThreadListResponse, 20)
+	for i := range first {
+		first[i] = ThreadListItem{UUID: fmt.Sprintf("thread-%d", i)}
+	}
+	wantErr := errors.New("second page failed")
+	poster := &threadPoster{
+		responses: []ThreadListResponse{first, nil},
+		errors:    []error{nil, wantErr},
+	}
+
+	threads, err := ListThreads(context.Background(), poster, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want second page failure", err)
+	}
+	if len(threads) != 20 {
+		t.Fatalf("got %d partial threads, want 20", len(threads))
 	}
 }
 
