@@ -77,8 +77,17 @@ func (e *JSONExporter) ExportThread(thread *models.Thread) error {
 		return fmt.Errorf("could not create thread directory: %w", err)
 	}
 
-	// Write thread data
-	if err := writeJSON(filepath.Join(dir, "thread.json"), thread); err != nil {
+	// A complete thread.json is the cache validity marker. Write an incomplete
+	// copy first so a later sidecar failure cannot leave an older complete cache
+	// looking valid, then write the complete marker only after all sidecars.
+	threadPath := filepath.Join(dir, "thread.json")
+	if thread.Complete {
+		incomplete := *thread
+		incomplete.Complete = false
+		if err := writeJSON(threadPath, &incomplete); err != nil {
+			return err
+		}
+	} else if err := writeJSON(threadPath, thread); err != nil {
 		return err
 	}
 
@@ -89,6 +98,11 @@ func (e *JSONExporter) ExportThread(thread *models.Thread) error {
 	}
 	if len(allSources) > 0 {
 		if err := writeJSON(filepath.Join(dir, "sources.json"), allSources); err != nil {
+			return err
+		}
+	}
+	if thread.Complete {
+		if err := writeJSON(threadPath, thread); err != nil {
 			return err
 		}
 	}

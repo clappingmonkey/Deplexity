@@ -54,15 +54,44 @@ func TestLoadCompleteThreadPreservesMetadata(t *testing.T) {
 	}
 }
 
+func TestExportThreadMarksCacheIncompleteUntilSidecarsSucceed(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	thread := &models.Thread{
+		UUID:     "thread-1",
+		Slug:     "thread-1",
+		Complete: true,
+		Entries:  []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+	}
+	threadDir := exporter.threadDir(thread)
+	if err := os.MkdirAll(filepath.Join(threadDir, "sources.json"), 0755); err != nil {
+		t.Fatalf("create blocking sources directory: %v", err)
+	}
+
+	if err := exporter.ExportThread(thread); err == nil {
+		t.Fatal("ExportThread succeeded with blocked sources.json")
+	}
+	if _, err := exporter.LoadCompleteThread(thread.UUID); err == nil {
+		t.Fatal("LoadCompleteThread accepted cache after sidecar write failure")
+	}
+	partial, err := exporter.LoadThread(thread.UUID)
+	if err != nil {
+		t.Fatalf("LoadThread: %v", err)
+	}
+	if partial.Complete {
+		t.Fatal("thread.json remains complete after sidecar write failure")
+	}
+}
+
 func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 	dir := t.TempDir()
 	exporter := &JSONExporter{OutputDir: dir}
 
 	space := models.Space{
-		UUID:         "e79179d1",
-		Name:         "Recipes",
-		Slug:         "recipes-55F50RUIQUK_fqfJUieN1w",
-		Instructions: "Test for the deplexity tool",
+		UUID:             "e79179d1",
+		Name:             "Recipes",
+		Slug:             "recipes-55F50RUIQUK_fqfJUieN1w",
+		Instructions:     "Test for the deplexity tool",
 		SuggestedQueries: []string{"How do I sear steak?"},
 		Skills: []models.Skill{
 			{

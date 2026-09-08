@@ -84,7 +84,7 @@ Answer content is in `entries[].blocks[]` where `intended_usage == "ask_text_0_m
 ## Export Flow
 
 1. **Phase 1 — Index**: `POST /rest/thread/list_ask_threads` with pagination (limit=20, ascending=false). Dual stop condition: `len(response) < limit` (primary) + all-duplicates (safety net). Result cached in `thread_index.json` with `Complete: true` flag.
-2. **Phase 2 — Details**: `GET /rest/thread/{uuid}` for each thread. Skips threads already fetched on disk. Adaptive rate limiting: delay doubles after 429, halves after 20 consecutive successes.
+2. **Phase 2 — Details**: `GET /rest/thread/{uuid}` for each thread. Skips threads already fetched on disk. Ordinary per-thread fetch/write failures preserve and render successful threads, but `manifest.json` records `threads_complete: false`, `expected_threads`, and ordered `failed_threads`, and the command exits non-zero after writing the manifest. Cancellation/deadline errors abort immediately and take precedence over accumulated failures. A failed `--refresh` must not count a stale cached thread as a current success. Adaptive rate limiting: delay doubles after 429, halves after 20 consecutive successes.
 3. **Phase 3 — Render**: Convert domain models to JSON/Markdown/PDF. Write threads to `threads/<slug>/` (canonical flat list). Copy thread files into `spaces/<name>/threads/<slug>/` so each space folder is self-contained. Account-wide global skills are written **once** under `account/`: `account/account.json` (JSON) + `account/global-skills.md` (Markdown), with each skill body in `account/skills/<name>.md`. They are not duplicated per space.
 
 Use `--refresh` to force re-fetching the thread index.
