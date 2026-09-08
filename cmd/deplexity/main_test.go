@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,174 @@ func TestFinalizeIndex(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFetchThreadIndexReListsIncompleteCacheFromStart(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	previousUpdatedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	previous := &models.ThreadIndex{
+		Threads: []models.ThreadRef{
+			{UUID: "old-1", UpdatedAt: previousUpdatedAt, RetryRequired: true},
+			{UUID: "stale"},
+		},
+		Total:    2,
+		Complete: false,
+	}
+	if err := jsonExp.SaveThreadIndex(previous); err != nil {
+		t.Fatalf("SaveThreadIndex: %v", err)
+	}
+
+	called := false
+	list := func(_ context.Context, onProgress func(int)) ([]models.Thread, error) {
+		called = true
+		if onProgress != nil {
+			onProgress(3)
+		}
+		return []models.Thread{
+			{UUID: "promoted", Title: "Promoted"},
+			{UUID: "old-1", Title: "Old"},
+			{UUID: "tail", Title: "Tail"},
+		}, nil
+	}
+
+	cmd := &ExportCmd{}
+	refs, err := cmd.fetchThreadIndex(context.Background(), jsonExp, list)
+	if err != nil {
+		t.Fatalf("fetchThreadIndex: %v", err)
+	}
+	if !called {
+		t.Fatal("incomplete cache was served without re-listing")
+	}
+	wantOrder := []string{"promoted", "old-1", "tail"}
+	if got := threadRefUUIDs(refs); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("refs = %v, want %v", got, wantOrder)
+	}
+	if !refs[1].RetryRequired || !refs[1].PreviousUpdatedAt.Equal(previousUpdatedAt) {
+		t.Fatalf("old-1 metadata = %#v, want retry and previous timestamp preserved", refs[1])
+	}
+
+	reloaded, err := jsonExp.LoadThreadIndex()
+	if err != nil {
+		t.Fatalf("LoadThreadIndex: %v", err)
+	}
+	if !reloaded.Complete || reloaded.Total != 3 {
+		t.Fatalf("persisted index = %#v, want complete total 3", reloaded)
+	}
+	if got := threadRefUUIDs(reloaded.Threads); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("persisted order = %v, want %v", got, wantOrder)
+	}
+}
+
+func TestFetchThreadIndexServesCompleteCacheWithoutListing(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	index := &models.ThreadIndex{
+		Threads:   []models.ThreadRef{{UUID: "cached"}},
+		Total:     1,
+		FetchedAt: time.Now().UTC(),
+		Complete:  true,
+	}
+	if err := jsonExp.SaveThreadIndex(index); err != nil {
+		t.Fatalf("SaveThreadIndex: %v", err)
+	}
+	list := func(context.Context, func(int)) ([]models.Thread, error) {
+		t.Fatal("list called for servable complete cache")
+		return nil, nil
+	}
+
+	cmd := &ExportCmd{}
+	refs, err := cmd.fetchThreadIndex(context.Background(), jsonExp, list)
+	if err != nil {
+		t.Fatalf("fetchThreadIndex: %v", err)
+	}
+	if got := threadRefUUIDs(refs); !reflect.DeepEqual(got, []string{"cached"}) {
+		t.Fatalf("refs = %v, want cached", got)
+	}
+}
+
+func TestFetchThreadIndexRefreshBypassesCompleteCacheAndDemotesOnError(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	index := &models.ThreadIndex{
+		Threads:   []models.ThreadRef{{UUID: "cached", RetryRequired: true}},
+		Total:     1,
+		FetchedAt: time.Now().UTC(),
+		Complete:  true,
+	}
+	if err := jsonExp.SaveThreadIndex(index); err != nil {
+		t.Fatalf("SaveThreadIndex: %v", err)
+	}
+	wantErr := errors.New("refresh interrupted")
+	called := false
+	list := func(context.Context, func(int)) ([]models.Thread, error) {
+		called = true
+		return []models.Thread{{UUID: "new-head"}}, wantErr
+	}
+
+	cmd := &ExportCmd{Refresh: true}
+	if _, err := cmd.fetchThreadIndex(context.Background(), jsonExp, list); !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want refresh interruption", err)
+	}
+	if !called {
+		t.Fatal("refresh served complete cache without listing")
+	}
+	reloaded, err := jsonExp.LoadThreadIndex()
+	if err != nil {
+		t.Fatalf("LoadThreadIndex: %v", err)
+	}
+	if reloaded.Complete {
+		t.Fatal("failed refresh left the previous index complete")
+	}
+	if got := threadRefUUIDs(reloaded.Threads); !reflect.DeepEqual(got, []string{"new-head", "cached"}) {
+		t.Fatalf("persisted refs = %v, want new prefix and prior cache", got)
+	}
+	if !reloaded.Threads[1].RetryRequired {
+		t.Fatal("prior retry metadata was lost during failed refresh")
+	}
+}
+
+func TestFetchThreadIndexInterruptedRelistRetainsPriorMetadata(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	previous := &models.ThreadIndex{
+		Threads: []models.ThreadRef{
+			{UUID: "old-head"},
+			{UUID: "deep-retry", RetryRequired: true},
+		},
+		Total:    2,
+		Complete: false,
+	}
+	if err := jsonExp.SaveThreadIndex(previous); err != nil {
+		t.Fatalf("SaveThreadIndex: %v", err)
+	}
+	listErr := errors.New("listing interrupted")
+	list := func(context.Context, func(int)) ([]models.Thread, error) {
+		return []models.Thread{{UUID: "new-head"}, {UUID: "old-head"}}, listErr
+	}
+
+	cmd := &ExportCmd{}
+	if _, err := cmd.fetchThreadIndex(context.Background(), jsonExp, list); !errors.Is(err, listErr) {
+		t.Fatalf("error = %v, want listing interruption", err)
+	}
+	reloaded, err := jsonExp.LoadThreadIndex()
+	if err != nil {
+		t.Fatalf("LoadThreadIndex: %v", err)
+	}
+	if reloaded.Complete {
+		t.Fatal("interrupted re-list was marked complete")
+	}
+	wantOrder := []string{"new-head", "old-head", "deep-retry"}
+	if got := threadRefUUIDs(reloaded.Threads); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("persisted order = %v, want %v", got, wantOrder)
+	}
+	if !reloaded.Threads[2].RetryRequired {
+		t.Fatal("unseen prior retry metadata was lost")
+	}
+}
+
+func threadRefUUIDs(refs []models.ThreadRef) []string {
+	uuids := make([]string, len(refs))
+	for i := range refs {
+		uuids[i] = refs[i].UUID
+	}
+	return uuids
 }
 
 // TestExportFormatAccountGating locks in the render half of the --no-spaces
