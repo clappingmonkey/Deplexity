@@ -83,6 +83,10 @@ type ExportCmd struct {
 
 func (cmd *ExportCmd) Run(ctx context.Context) error {
 	startTime := time.Now()
+	delay, err := requestDelay(cmd.Delay)
+	if err != nil {
+		return err
+	}
 
 	session, err := auth.LoadSession()
 	if err != nil {
@@ -93,7 +97,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.SetDelay(time.Duration(cmd.Delay) * time.Millisecond)
+	c.SetDelay(delay)
 	c.SetVerbose(cmd.verbose)
 
 	jsonExp := &export.JSONExporter{OutputDir: cmd.Output}
@@ -222,6 +226,17 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 
 	fmt.Printf("\nExport complete: %s (%s)\n", cmd.Output, time.Since(startTime).Round(time.Second))
 	return nil
+}
+
+func requestDelay(milliseconds int) (time.Duration, error) {
+	if milliseconds < 0 {
+		return 0, errors.New("--delay must be non-negative")
+	}
+	maxMilliseconds := int64((time.Duration(1<<63 - 1)) / time.Millisecond)
+	if int64(milliseconds) > maxMilliseconds {
+		return 0, errors.New("--delay is too large")
+	}
+	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
 func finalizeExport(jsonExp *export.JSONExporter, manifest *models.ExportManifest) error {

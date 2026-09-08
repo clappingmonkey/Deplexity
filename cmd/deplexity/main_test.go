@@ -47,6 +47,54 @@ func TestNeedsThreadFetch(t *testing.T) {
 	}
 }
 
+func TestRequestDelayValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int
+		want time.Duration
+		err  string
+	}{
+		{name: "zero", ms: 0},
+		{name: "positive", ms: 500, want: 500 * time.Millisecond},
+		{name: "negative", ms: -1, err: "--delay must be non-negative"},
+	}
+	maxInt := int(^uint(0) >> 1)
+	maxMilliseconds := int64((time.Duration(1<<63 - 1)) / time.Millisecond)
+	if int64(maxInt) > maxMilliseconds {
+		tests = append(tests, struct {
+			name string
+			ms   int
+			want time.Duration
+			err  string
+		}{name: "overflow", ms: int(maxMilliseconds + 1), err: "--delay is too large"})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := requestDelay(tt.ms)
+			if tt.err != "" {
+				if err == nil || err.Error() != tt.err {
+					t.Fatalf("requestDelay(%d) error = %v, want %q", tt.ms, err, tt.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("requestDelay(%d): %v", tt.ms, err)
+			}
+			if got != tt.want {
+				t.Errorf("requestDelay(%d) = %v, want %v", tt.ms, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExportRejectsNegativeDelayBeforeSessionLoad(t *testing.T) {
+	cmd := &ExportCmd{Delay: -1}
+	if err := cmd.Run(context.Background()); err == nil || err.Error() != "--delay must be non-negative" {
+		t.Fatalf("Run error = %v, want negative delay validation", err)
+	}
+}
+
 func TestResumePoint(t *testing.T) {
 	partial := &models.Thread{NextCursor: "c1"}
 
