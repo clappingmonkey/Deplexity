@@ -139,7 +139,7 @@ func TestEnrichSpaceSkillsFiltersCollectionScopeAndFetchesBody(t *testing.T) {
 	}}`
 	m := &mockEnricher{
 		responses: map[string]string{
-			"selectable":      selectable,
+			"selectable":              selectable,
 			"skills/skill-collection": detail,
 		},
 		rawBodies: map[string]string{
@@ -268,7 +268,7 @@ func (p *pagingGetter) Get(_ context.Context, path string, dest any) error {
 
 func TestListSpaceSkillsFollowsPagination(t *testing.T) {
 	p := &pagingGetter{pages: map[string]string{
-		"": `{"skills":[{"id":"s1","name":"one","scope":"collection"}],"next_cursor":"CUR2"}`,
+		"":     `{"skills":[{"id":"s1","name":"one","scope":"collection"}],"next_cursor":"CUR2"}`,
 		"CUR2": `{"skills":[{"id":"s2","name":"two","scope":"global"}],"next_cursor":""}`,
 	}}
 
@@ -328,7 +328,7 @@ func TestEnrichSpaceSkillsPropagatesCancellation(t *testing.T) {
 }
 
 func TestEnrichSpaceDetailSkipsEmptySlug(t *testing.T) {
-	m := &mockEnricher{} // no canned responses: any Get would error
+	m := &mockEnricher{}                                // no canned responses: any Get would error
 	space := &models.Space{UUID: "u1", Name: "Recipes"} // Slug == ""
 
 	if err := enrichSpaceDetail(context.Background(), m, space); err != nil {
@@ -340,7 +340,7 @@ func TestEnrichSpaceDetailSkipsEmptySlug(t *testing.T) {
 }
 
 func TestEnrichSpaceSkillsSkipsEmptyUUID(t *testing.T) {
-	m := &mockEnricher{} // no canned responses: any Get would error
+	m := &mockEnricher{}                                     // no canned responses: any Get would error
 	space := &models.Space{Slug: "recipes", Name: "Recipes"} // UUID == ""
 
 	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
@@ -418,6 +418,30 @@ func TestEnrichSpacesFailSoftAcrossSpaces(t *testing.T) {
 	// The healthy space was enriched.
 	if spaces[1].Instructions != "ok" {
 		t.Errorf("space[1].Instructions = %q, want enriched", spaces[1].Instructions)
+	}
+}
+
+func TestEnrichSpacesDeduplicatesNonEmptyUUIDs(t *testing.T) {
+	m := &mockEnricher{responses: map[string]string{
+		"get_collection": `{"instructions":"ok"}`,
+		"selectable":     `{"skills":[],"next_cursor":null}`,
+	}}
+	items := []SpaceItem{
+		{UUID: "same", Title: "First", Slug: "first"},
+		{UUID: "same", Title: "Duplicate", Slug: "duplicate"},
+		{Title: "No ID One"},
+		{Title: "No ID Two"},
+	}
+
+	spaces, err := enrichSpaces(context.Background(), m, items)
+	if err != nil {
+		t.Fatalf("enrichSpaces: %v", err)
+	}
+	if len(spaces) != 3 {
+		t.Fatalf("got %d spaces, want one UUID space and two UUID-less spaces", len(spaces))
+	}
+	if spaces[0].Name != "First" || spaces[1].Name != "No ID One" || spaces[2].Name != "No ID Two" {
+		t.Fatalf("spaces = %#v, want first UUID occurrence and both UUID-less entries", spaces)
 	}
 }
 

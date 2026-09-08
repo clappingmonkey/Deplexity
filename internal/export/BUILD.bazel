@@ -24,6 +24,7 @@ go_test(
     srcs = [
         "json_test.go",
         "markdown_test.go",
+        "pdf_test.go",
         "util_test.go",
     ],
     embed = [":export"],

@@ -1,6 +1,7 @@
 package export
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
@@ -92,5 +93,130 @@ func TestSkillFilenamesUniqueNamesAreUnsuffixed(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestSpaceDirNamesUseStableIdentitySuffixes(t *testing.T) {
+	spaces := []models.Space{
+		{UUID: "aaaaaaaa1111", Name: "Recipes"},
+		{UUID: "bbbbbbbb2222", Name: "recipes"},
+		{UUID: "cccccccc3333", Name: "C++ Helper"},
+		{UUID: "dddddddd4444", Name: "C# Helper"},
+	}
+	got := spaceDirNames(spaces)
+	for i := range got {
+		if len(got[i]) > maxFilenameLength {
+			t.Errorf("got[%d] length = %d, want <= %d", i, len(got[i]), maxFilenameLength)
+		}
+		if !strings.HasPrefix(got[i], []string{"recipes-aaaaaaaa-", "recipes-bbbbbbbb-", "c-helper-cccccccc-", "c-helper-dddddddd-"}[i]) {
+			t.Errorf("got[%d] = %q, want readable identity prefix", i, got[i])
+		}
+	}
+	if got[0] == got[1] || got[2] == got[3] {
+		t.Fatalf("colliding display names were not disambiguated: %v", got)
+	}
+}
+
+func TestSpaceDirNamesKeepSuffixAfterTruncation(t *testing.T) {
+	prefix := strings.Repeat("a", 140)
+	spaces := []models.Space{
+		{UUID: "aaaaaaaa1111", Name: prefix + "one"},
+		{UUID: "bbbbbbbb2222", Name: prefix + "two"},
+	}
+	got := spaceDirNames(spaces)
+	if got[0] == got[1] {
+		t.Fatalf("truncated space names collided: %q", got[0])
+	}
+	if len(got[0]) > maxFilenameLength || !strings.Contains(got[0], "-aaaaaaaa-") {
+		t.Errorf("got[0] = %q, want bounded name with stable suffix", got[0])
+	}
+	if len(got[1]) > maxFilenameLength || !strings.Contains(got[1], "-bbbbbbbb-") {
+		t.Errorf("got[1] = %q, want bounded name with stable suffix", got[1])
+	}
+}
+
+func TestSpaceDirNamesHandleUnsafeAndDuplicateIdentities(t *testing.T) {
+	spaces := []models.Space{
+		{UUID: "same-id", Name: "."},
+		{UUID: "same-id", Name: ".."},
+		{Slug: "slug-value", Name: ""},
+		{Name: "   "},
+	}
+	want := []string{
+		"space-same-id-058be655fae2a4c37a21d2c091ba7661507619c9b348e090c3eb715bf552f1e5",
+		"space-same-id-058be655fae2a4c37a21d2c091ba7661507619c9b348e090c3eb715bf552f1e5-2",
+		"unnamed-slug-val-bb7c3ff182a5fb1f1da473a0be71d1483cef53d7f8d120b5622208b8352200da",
+		"unnamed-id",
+	}
+	got := spaceDirNames(spaces)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+		if got[i] == "." || got[i] == ".." {
+			t.Errorf("got unsafe path component %q", got[i])
+		}
+	}
+}
+
+func TestSpaceDirNamesAreStableForIdentitiesWithSameTruncatedHash(t *testing.T) {
+	first := models.Space{UUID: "aaaaaaaa-cd9a-5224-e37f-87674679dc48", Name: "Recipes"}
+	second := models.Space{UUID: "aaaaaaaa-98fa-e548-7436-4992599ad117", Name: "Recipes"}
+	forward := spaceDirNames([]models.Space{first, second})
+	reverse := spaceDirNames([]models.Space{second, first})
+
+	if forward[0] != reverse[1] || forward[1] != reverse[0] {
+		t.Fatalf("full-hash identity mapping changed after reorder: forward=%v reverse=%v", forward, reverse)
+	}
+	if forward[0] == forward[1] {
+		t.Fatalf("distinct identities with colliding 32-bit hash prefixes share %q", forward[0])
+	}
+}
+
+func TestSpaceDirNamesHashNonEmptyUnsafeIdentities(t *testing.T) {
+	first := models.Space{Slug: "???", Name: "Same"}
+	second := models.Space{Slug: "!!!", Name: "Same"}
+	forward := spaceDirNames([]models.Space{first, second})
+	reverse := spaceDirNames([]models.Space{second, first})
+
+	if forward[0] != reverse[1] || forward[1] != reverse[0] {
+		t.Fatalf("unsafe identity mapping changed after reorder: forward=%v reverse=%v", forward, reverse)
+	}
+	if forward[0] == forward[1] {
+		t.Fatalf("distinct unsafe identities share %q", forward[0])
+	}
+}
+
+func TestSpaceDirNamesAreStableForShortSanitizationCollisions(t *testing.T) {
+	first := models.Space{Slug: "a!", Name: "Same"}
+	second := models.Space{Slug: "a@", Name: "Same"}
+	forward := spaceDirNames([]models.Space{first, second})
+	reverse := spaceDirNames([]models.Space{second, first})
+
+	if forward[0] != reverse[1] {
+		t.Errorf("first space moved from %q to %q after reorder", forward[0], reverse[1])
+	}
+	if forward[1] != reverse[0] {
+		t.Errorf("second space moved from %q to %q after reorder", forward[1], reverse[0])
+	}
+	if forward[0] == forward[1] {
+		t.Fatalf("short malformed identities collided: %q", forward[0])
+	}
+}
+
+func TestSpaceDirNamesAreStableWhenIdentityPrefixesCollide(t *testing.T) {
+	first := models.Space{UUID: "aaaaaaaa1111", Name: "Recipes"}
+	second := models.Space{UUID: "aaaaaaaa2222", Name: "Recipes"}
+	forward := spaceDirNames([]models.Space{first, second})
+	reverse := spaceDirNames([]models.Space{second, first})
+
+	if forward[0] != reverse[1] {
+		t.Errorf("first space moved from %q to %q after reorder", forward[0], reverse[1])
+	}
+	if forward[1] != reverse[0] {
+		t.Errorf("second space moved from %q to %q after reorder", forward[1], reverse[0])
+	}
+	if forward[0] == forward[1] {
+		t.Fatalf("distinct identities with shared prefix collided: %q", forward[0])
 	}
 }

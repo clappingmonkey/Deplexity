@@ -23,8 +23,8 @@ func TestMarkdownExportThread(t *testing.T) {
 		UpdatedAt: time.Date(2024, 6, 16, 12, 0, 0, 0, time.UTC),
 		Entries: []models.Entry{
 			{
-				UUID:  "entry-1",
-				Query: "What is Go?",
+				UUID:   "entry-1",
+				Query:  "What is Go?",
 				Answer: "Go is a programming language.",
 				Sources: []models.Source{
 					{Title: "Go Website", URL: "https://go.dev"},
@@ -90,9 +90,10 @@ func TestMarkdownExportSpacesWithSkills(t *testing.T) {
 		t.Fatalf("read spaces.md: %v", err)
 	}
 	content := string(overview)
+	spaceDir := spaceDirNames(spaces)[0]
 
 	// Link uses forward slashes and the collision-free filename.
-	wantLink := "[git-commit](recipes/skills/git-commit.md)"
+	wantLink := "[git-commit](" + spaceDir + "/skills/git-commit.md)"
 	if !strings.Contains(content, wantLink) {
 		t.Errorf("spaces.md missing skill link %q\n%s", wantLink, content)
 	}
@@ -108,7 +109,7 @@ func TestMarkdownExportSpacesWithSkills(t *testing.T) {
 	}
 
 	// The body sidecar file exists with the skill body.
-	bodyPath := filepath.Join(tmpDir, "spaces", "recipes", "skills", "git-commit.md")
+	bodyPath := filepath.Join(tmpDir, "spaces", spaceDir, "skills", "git-commit.md")
 	body, err := os.ReadFile(bodyPath)
 	if err != nil {
 		t.Fatalf("read skill body: %v", err)
@@ -118,8 +119,35 @@ func TestMarkdownExportSpacesWithSkills(t *testing.T) {
 	}
 
 	// The body-less skill must not produce a sidecar file.
-	if _, err := os.Stat(filepath.Join(tmpDir, "spaces", "recipes", "skills", "no-body.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmpDir, "spaces", spaceDir, "skills", "no-body.md")); !os.IsNotExist(err) {
 		t.Errorf("unexpected sidecar for body-less skill (err=%v)", err)
+	}
+}
+
+func TestMarkdownExportSpacesUsesDistinctCanonicalLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	exp := &MarkdownExporter{OutputDir: tmpDir}
+	spaces := []models.Space{
+		{UUID: "aaaaaaaa1111", Name: "Recipes", Skills: []models.Skill{{ID: "s1", Name: "one", Body: "one"}}},
+		{UUID: "bbbbbbbb2222", Name: "recipes", Skills: []models.Skill{{ID: "s2", Name: "two", Body: "two"}}},
+	}
+	if err := exp.ExportSpaces(context.Background(), spaces, nil); err != nil {
+		t.Fatalf("ExportSpaces: %v", err)
+	}
+	dirs := spaceDirNames(spaces)
+	overview, err := os.ReadFile(filepath.Join(tmpDir, "spaces", "spaces.md"))
+	if err != nil {
+		t.Fatalf("read spaces.md: %v", err)
+	}
+	content := string(overview)
+	for i, skill := range []string{"one", "two"} {
+		link := "[" + skill + "](" + dirs[i] + "/skills/" + skill + ".md)"
+		if !strings.Contains(content, link) {
+			t.Errorf("spaces.md missing link %q\n%s", link, content)
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "spaces", dirs[i], "skills", skill+".md")); err != nil {
+			t.Errorf("linked skill file missing: %v", err)
+		}
 	}
 }
 

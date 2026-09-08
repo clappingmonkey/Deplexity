@@ -102,8 +102,9 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 
 	var sb strings.Builder
 	sb.WriteString("# Perplexity Spaces\n\n")
+	spaceDirs := spaceDirNames(spaces)
 
-	for _, space := range spaces {
+	for spaceIndex, space := range spaces {
 		sb.WriteString(fmt.Sprintf("## %s\n\n", space.Name))
 		if space.Description != "" {
 			sb.WriteString(fmt.Sprintf("%s\n\n", space.Description))
@@ -140,14 +141,13 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 
 		if len(space.Skills) > 0 {
 			sb.WriteString("\n**Skills:**\n\n")
-			spaceSlug := sanitizeFilename(space.Name)
 			filenames := skillFilenames(space.Skills)
 			for i, sk := range space.Skills {
 				if sk.Body != "" {
 					// Link relative to spaces.md, which lives in the spaces dir.
 					// path.Join (forward slashes) keeps the Markdown link valid
 					// on every OS, unlike filepath.Join on Windows.
-					link := path.Join(spaceSlug, "skills", filenames[i])
+					link := path.Join(spaceDirs[spaceIndex], "skills", filenames[i])
 					sb.WriteString(fmt.Sprintf("- [%s](%s)", sk.Name, link))
 				} else {
 					sb.WriteString(fmt.Sprintf("- %s", sk.Name))
@@ -172,8 +172,8 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 	for i := range threads {
 		threadByUUID[threads[i].UUID] = &threads[i]
 	}
-	for _, space := range spaces {
-		spaceDir := filepath.Join(dir, sanitizeFilename(space.Name))
+	for i, space := range spaces {
+		spaceDir := filepath.Join(dir, spaceDirs[i])
 
 		// Write skill bodies as SKILL.md sidecar files.
 		if err := writeSpaceSkillBodies(spaceDir, space.Skills); err != nil {

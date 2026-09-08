@@ -1,6 +1,8 @@
 package export
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -8,6 +10,8 @@ import (
 )
 
 var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+
+const maxFilenameLength = 128
 
 // sanitizeFilename replaces characters unsafe for file/directory names.
 func sanitizeFilename(name string) string {
@@ -25,11 +29,68 @@ func sanitizeFilename(name string) string {
 	}
 
 	// Limit length
-	if len(name) > 128 {
-		name = name[:128]
+	if len(name) > maxFilenameLength {
+		name = name[:maxFilenameLength]
 	}
 
 	return strings.ToLower(name)
+}
+
+// spaceDirNames returns a collision-free directory name for each space, keyed
+// by slice index. The readable name is always suffixed with a stable fragment
+// of the space UUID (or slug fallback), so case folding, punctuation removal,
+// and truncation cannot make distinct spaces share a directory. All exporters
+// use this helper so filesystem paths and Markdown links stay aligned.
+func spaceDirNames(spaces []models.Space) []string {
+	names := make([]string, len(spaces))
+	used := make(map[string]bool, len(spaces))
+
+	for i := range spaces {
+		identity := spaces[i].UUID
+		if identity == "" {
+			identity = spaces[i].Slug
+		}
+		suffix := spaceIdentitySuffix(identity)
+		base := sanitizeFilename(spaces[i].Name)
+		if base == "" || base == "." || base == ".." {
+			base = "space"
+		}
+
+		discriminator := ""
+		for n := 1; ; n++ {
+			maxBaseLength := maxFilenameLength - len(suffix) - len(discriminator) - 1
+			trimmedBase := base
+			if len(trimmedBase) > maxBaseLength {
+				trimmedBase = strings.TrimRight(trimmedBase[:maxBaseLength], ".-")
+			}
+			name := trimmedBase + "-" + suffix + discriminator
+			if !used[name] {
+				used[name] = true
+				names[i] = name
+				break
+			}
+			discriminator = fmt.Sprintf("-%d", n+1)
+		}
+	}
+
+	return names
+}
+
+// spaceIdentitySuffix combines a readable identity prefix with the full hash of
+// the raw identity, so distinct identities remain stable regardless of ordering.
+func spaceIdentitySuffix(identity string) string {
+	if identity == "" {
+		return "id"
+	}
+	sum := sha256.Sum256([]byte(identity))
+	safe := strings.TrimRight(sanitizeFilename(identity), ".-")
+	if safe == "" || safe == "." || safe == ".." || safe == "unnamed" {
+		safe = "id"
+	}
+	if len(safe) > 8 {
+		safe = safe[:8]
+	}
+	return safe + "-" + fmt.Sprintf("%x", sum[:])
 }
 
 // threadSlug returns the slug (or UUID fallback) for a thread's directory name.
@@ -73,9 +134,8 @@ func skillFilenames(skills []models.Skill) []string {
 	return names
 }
 
-// shortID returns a short, filesystem-safe fragment of a skill ID for
-// disambiguating filenames. Falls back to a sanitized form when the ID is
-// short or non-hex.
+// shortID returns a short, filesystem-safe ID fragment for disambiguating names.
+// It falls back to a sanitized form when the ID is short or non-hex.
 func shortID(id string) string {
 	s := sanitizeFilename(id)
 	if s == "unnamed" {

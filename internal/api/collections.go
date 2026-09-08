@@ -72,8 +72,15 @@ func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, err
 // can be exercised against a mock enricher without a live client.
 func enrichSpaces(ctx context.Context, c enricher, items []SpaceItem) ([]models.Space, error) {
 	var spaces []models.Space
+	seenUUIDs := make(map[string]bool, len(items))
 
 	for _, item := range items {
+		if item.UUID != "" {
+			if seenUUIDs[item.UUID] {
+				continue
+			}
+			seenUUIDs[item.UUID] = true
+		}
 		space := models.Space{
 			UUID:      item.UUID,
 			Name:      item.Title,
