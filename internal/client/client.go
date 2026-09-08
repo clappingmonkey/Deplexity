@@ -47,13 +47,14 @@ var ErrNotAuthenticated = errors.New("authentication failed — run 'deplexity l
 
 // Client is an authenticated HTTP client for the Perplexity internal API.
 type Client struct {
-	http    *http.Client
-	baseURL string
-	delay            time.Duration
-	lastReq          time.Time
-	consecutiveOK    int // consecutive 200s since last 429
-	cookies          []*http.Cookie
-	verbose          bool
+	http          *http.Client
+	baseURL       string
+	delay         time.Duration
+	lastReq       time.Time
+	waitDelay     func(context.Context, time.Duration) error
+	consecutiveOK int // consecutive 200s since last 429
+	cookies       []*http.Cookie
+	verbose       bool
 }
 
 // New creates a new authenticated client from a saved session.
@@ -107,7 +108,9 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 			return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
 		}
 
-		c.rateLimit()
+		if err := c.rateLimit(ctx); err != nil {
+			return err
+		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
@@ -203,7 +206,9 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 			return nil, fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
 		}
 
-		c.rateLimit()
+		if err := c.rateLimit(ctx); err != nil {
+			return nil, err
+		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
@@ -329,7 +334,9 @@ func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
 		// inside the pre-signed URL's ~15 min validity window. onSuccess/
 		// onRateLimited are intentionally NOT called: S3 rate limits are
 		// independent of Perplexity's and must not perturb its adaptive delay.
-		c.rateLimit()
+		if err := c.rateLimit(ctx); err != nil {
+			return nil, err
+		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 		if err != nil {
@@ -415,7 +422,9 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, dest i
 			return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
 		}
 
-		c.rateLimit()
+		if err := c.rateLimit(ctx); err != nil {
+			return err
+		}
 
 		var bodyReader io.Reader
 		if body != nil {
@@ -532,15 +541,40 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 }
 
-// rateLimit enforces the configured delay between requests.
-func (c *Client) rateLimit() {
+// rateLimit enforces the configured delay between requests without delaying
+// cancellation. lastReq advances only when the caller may issue a request.
+func (c *Client) rateLimit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.delay > 0 && !c.lastReq.IsZero() {
 		elapsed := time.Since(c.lastReq)
 		if elapsed < c.delay {
-			time.Sleep(c.delay - elapsed)
+			wait := c.waitDelay
+			if wait == nil {
+				wait = waitForDelay
+			}
+			if err := wait(ctx, c.delay-elapsed); err != nil {
+				return err
+			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.lastReq = time.Now()
+	return nil
+}
+
+func waitForDelay(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // onSuccess records a successful request and gradually lowers the

@@ -3,9 +3,12 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -82,6 +85,149 @@ func TestClientGetContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
+}
+
+func TestRateLimitCancellationPreservesLastRequest(t *testing.T) {
+	lastReq := time.Now()
+	entered := make(chan struct{})
+	c := &Client{
+		delay:   time.Hour,
+		lastReq: lastReq,
+		waitDelay: func(ctx context.Context, _ time.Duration) error {
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- c.rateLimit(ctx)
+	}()
+
+	<-entered
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("rateLimit error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("rateLimit did not return promptly after cancellation")
+	}
+	if !c.lastReq.Equal(lastReq) {
+		t.Errorf("lastReq = %v, want unchanged %v", c.lastReq, lastReq)
+	}
+}
+
+func TestRateLimitWaitCompletionRecordsRequestTimestamp(t *testing.T) {
+	previous := time.Now()
+	waited := false
+	c := &Client{
+		delay:   time.Hour,
+		lastReq: previous,
+		waitDelay: func(context.Context, time.Duration) error {
+			waited = true
+			return nil
+		},
+	}
+	if err := c.rateLimit(context.Background()); err != nil {
+		t.Fatalf("rateLimit: %v", err)
+	}
+	if !waited {
+		t.Fatal("rateLimit did not enter the wait path")
+	}
+	if !c.lastReq.After(previous) {
+		t.Errorf("lastReq = %v, want after %v", c.lastReq, previous)
+	}
+}
+
+func TestRateLimitRejectsPreCancelledContextWithoutTimestamp(t *testing.T) {
+	c := &Client{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := c.rateLimit(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("rateLimit error = %v, want context.Canceled", err)
+	}
+	if !c.lastReq.IsZero() {
+		t.Errorf("lastReq = %v, want zero", c.lastReq)
+	}
+}
+
+func TestRateLimitSuccessRecordsRequestTimestamp(t *testing.T) {
+	c := &Client{}
+	before := time.Now()
+	if err := c.rateLimit(context.Background()); err != nil {
+		t.Fatalf("rateLimit: %v", err)
+	}
+	if c.lastReq.Before(before) {
+		t.Errorf("lastReq = %v, want at or after %v", c.lastReq, before)
+	}
+}
+
+func TestClientMethodsCancellationDuringPacingSkipsRequest(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		call func(context.Context, *Client) error
+	}{
+		{name: "Get", call: func(ctx context.Context, c *Client) error { return c.Get(ctx, "/test", nil) }},
+		{name: "GetRaw", call: func(ctx context.Context, c *Client) error { _, err := c.GetRaw(ctx, "/test"); return err }},
+		{name: "GetRawURL", call: func(ctx context.Context, c *Client) error { _, err := c.GetRawURL(ctx, srv.URL+"/test"); return err }},
+		{name: "Post", call: func(ctx context.Context, c *Client) error { return c.Post(ctx, "/test", nil, nil) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reached atomic.Bool
+			entered := make(chan struct{})
+			clientHTTP := srv.Client()
+			clientHTTP.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				reached.Store(true)
+				return srv.Client().Transport.RoundTrip(req)
+			})
+			c := &Client{
+				http:    clientHTTP,
+				baseURL: srv.URL,
+				delay:   time.Hour,
+				lastReq: time.Now(),
+				waitDelay: func(ctx context.Context, _ time.Duration) error {
+					close(entered)
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() { result <- tt.call(ctx, c) }()
+			<-entered
+			cancel()
+
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("request did not return promptly after pacing cancellation")
+			}
+			if reached.Load() {
+				t.Fatal("HTTP transport was reached after pacing cancellation")
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestGetRawURLIsolatesHeaders(t *testing.T) {
