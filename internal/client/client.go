@@ -52,6 +52,7 @@ type Client struct {
 	delay         time.Duration
 	lastReq       time.Time
 	waitDelay     func(context.Context, time.Duration) error
+	retryWait     func(context.Context, time.Duration) error
 	consecutiveOK int // consecutive 200s since last 429
 	cookies       []*http.Cookie
 	verbose       bool
@@ -101,13 +102,6 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 	netAttempt := 0
 
 	for {
-		if httpAttempt > maxRetries {
-			return fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
-		}
-		if netAttempt > maxNetworkRetries {
-			return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
-		}
-
 		if err := c.rateLimit(ctx); err != nil {
 			return err
 		}
@@ -126,16 +120,20 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 				return ctx.Err()
 			}
 			netAttempt++
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if netAttempt > maxNetworkRetries {
+				return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
+			}
 			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
 			if c.verbose {
 				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return err
 			}
+			continue
 		}
 
 		// Reset network attempt counter on any successful connection.
@@ -154,16 +152,20 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 				c.onRateLimited()
 			}
 			httpAttempt++
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if httpAttempt > maxRetries {
+				return fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
+			}
 			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
 			if c.verbose {
 				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return err
 			}
+			continue
 		}
 
 		defer resp.Body.Close()
@@ -199,13 +201,6 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	netAttempt := 0
 
 	for {
-		if httpAttempt > maxRetries {
-			return nil, fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
-		}
-		if netAttempt > maxNetworkRetries {
-			return nil, fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
-		}
-
 		if err := c.rateLimit(ctx); err != nil {
 			return nil, err
 		}
@@ -223,16 +218,20 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 				return nil, ctx.Err()
 			}
 			netAttempt++
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if netAttempt > maxNetworkRetries {
+				return nil, fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
+			}
 			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
 			if c.verbose {
 				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return nil, err
 			}
+			continue
 		}
 
 		netAttempt = 0
@@ -250,16 +249,20 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 				c.onRateLimited()
 			}
 			httpAttempt++
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if httpAttempt > maxRetries {
+				return nil, fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
+			}
 			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
 			if c.verbose {
 				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return nil, err
 			}
+			continue
 		}
 
 		defer resp.Body.Close()
@@ -321,13 +324,6 @@ func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
 	netAttempt := 0
 
 	for {
-		if httpAttempt > maxRetries {
-			return nil, fmt.Errorf("request to %s failed after %d retries", rawURL, maxRetries)
-		}
-		if netAttempt > maxNetworkRetries {
-			return nil, fmt.Errorf("request to %s failed after %d network retries", rawURL, maxNetworkRetries)
-		}
-
 		// Reuse the shared inter-request pacing so a single client stays polite
 		// across mixed Perplexity/S3 traffic. The adaptive delay is capped
 		// (maxDelay) and skill bodies are fetched eagerly, so this stays well
@@ -352,16 +348,20 @@ func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
 				return nil, ctx.Err()
 			}
 			netAttempt++
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if netAttempt > maxNetworkRetries {
+				return nil, fmt.Errorf("request to %s failed after %d network retries", rawURL, maxNetworkRetries)
+			}
 			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
 			if c.verbose {
 				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return nil, err
 			}
+			continue
 		}
 
 		netAttempt = 0
@@ -376,16 +376,20 @@ func (c *Client) GetRawURL(ctx context.Context, rawURL string) ([]byte, error) {
 			resp.StatusCode == http.StatusGatewayTimeout {
 			resp.Body.Close()
 			httpAttempt++
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if httpAttempt > maxRetries {
+				return nil, fmt.Errorf("request to %s failed after %d retries", rawURL, maxRetries)
+			}
 			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
 			if c.verbose {
 				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return nil, err
 			}
+			continue
 		}
 
 		// Read one byte past the cap so an oversized body is detected as an
@@ -415,13 +419,6 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, dest i
 	netAttempt := 0
 
 	for {
-		if httpAttempt > maxRetries {
-			return fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
-		}
-		if netAttempt > maxNetworkRetries {
-			return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
-		}
-
 		if err := c.rateLimit(ctx); err != nil {
 			return err
 		}
@@ -451,16 +448,20 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, dest i
 				return ctx.Err()
 			}
 			netAttempt++
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if netAttempt > maxNetworkRetries {
+				return fmt.Errorf("request to %s failed after %d network retries", path, maxNetworkRetries)
+			}
 			backoff := computeBackoff(netAttempt-1, networkRetryBase, networkRetryMax)
 			if c.verbose {
 				log.Printf("[DEBUG] network error, backing off %s (attempt %d/%d): %v", backoff, netAttempt, maxNetworkRetries, err)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return err
 			}
+			continue
 		}
 
 		netAttempt = 0
@@ -478,16 +479,20 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, dest i
 				c.onRateLimited()
 			}
 			httpAttempt++
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if httpAttempt > maxRetries {
+				return fmt.Errorf("request to %s failed after %d retries", path, maxRetries)
+			}
 			backoff := computeBackoff(httpAttempt-1, baseBackoff, maxBackoff)
 			if c.verbose {
 				log.Printf("[DEBUG] retryable error %d, backing off %s (attempt %d/%d)", resp.StatusCode, backoff, httpAttempt, maxRetries)
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-				continue
+			if err := c.waitForRetry(ctx, backoff); err != nil {
+				return err
 			}
+			continue
 		}
 
 		defer resp.Body.Close()
@@ -575,6 +580,13 @@ func waitForDelay(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func (c *Client) waitForRetry(ctx context.Context, delay time.Duration) error {
+	if c.retryWait != nil {
+		return c.retryWait(ctx, delay)
+	}
+	return waitForDelay(ctx, delay)
 }
 
 // onSuccess records a successful request and gradually lowers the

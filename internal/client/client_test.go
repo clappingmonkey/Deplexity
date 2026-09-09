@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,6 +230,262 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestClientMethodsDoNotWaitAfterFinalHTTPRetry(t *testing.T) {
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			calls := 0
+			waits := 0
+			closed := 0
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return &http.Response{
+						StatusCode: http.StatusServiceUnavailable,
+						Body:       &trackingReadCloser{Reader: strings.NewReader("unavailable"), closed: &closed},
+						Header:     make(http.Header),
+					}, nil
+				})},
+				baseURL: "https://example.test",
+				retryWait: func(context.Context, time.Duration) error {
+					waits++
+					return nil
+				},
+			}
+
+			err := method.call(context.Background(), c)
+			if err == nil || !strings.Contains(err.Error(), "failed after 5 retries") {
+				t.Fatalf("error = %v, want HTTP retry exhaustion", err)
+			}
+			if calls != maxRetries+1 || waits != maxRetries {
+				t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxRetries+1, maxRetries)
+			}
+			if closed != calls {
+				t.Errorf("closed bodies=%d, want %d", closed, calls)
+			}
+		})
+	}
+}
+
+func TestClientMethodsSucceedOnFinalHTTPAttempt(t *testing.T) {
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			calls := 0
+			waits := 0
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					status := http.StatusServiceUnavailable
+					if calls == maxRetries+1 {
+						status = http.StatusOK
+					}
+					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+				})},
+				baseURL: "https://example.test",
+				retryWait: func(context.Context, time.Duration) error {
+					waits++
+					return nil
+				},
+			}
+
+			if err := method.call(context.Background(), c); err != nil {
+				t.Fatalf("final allowed attempt failed: %v", err)
+			}
+			if calls != maxRetries+1 || waits != maxRetries {
+				t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxRetries+1, maxRetries)
+			}
+		})
+	}
+}
+
+func TestClientMethodsDoNotWaitAfterFinalNetworkRetry(t *testing.T) {
+	wantErr := errors.New("network unavailable")
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			calls := 0
+			waits := 0
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return nil, wantErr
+				})},
+				baseURL: "https://example.test",
+				retryWait: func(context.Context, time.Duration) error {
+					waits++
+					return nil
+				},
+			}
+
+			err := method.call(context.Background(), c)
+			if err == nil || !strings.Contains(err.Error(), "failed after 15 network retries") {
+				t.Fatalf("error = %v, want network retry exhaustion", err)
+			}
+			if calls != maxNetworkRetries+1 || waits != maxNetworkRetries {
+				t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxNetworkRetries+1, maxNetworkRetries)
+			}
+		})
+	}
+}
+
+func TestClientMethodsSucceedOnFinalNetworkAttempt(t *testing.T) {
+	wantErr := errors.New("network unavailable")
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			calls := 0
+			waits := 0
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls <= maxNetworkRetries {
+						return nil, wantErr
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+				})},
+				baseURL: "https://example.test",
+				retryWait: func(context.Context, time.Duration) error {
+					waits++
+					return nil
+				},
+			}
+
+			if err := method.call(context.Background(), c); err != nil {
+				t.Fatalf("final allowed attempt failed: %v", err)
+			}
+			if calls != maxNetworkRetries+1 || waits != maxNetworkRetries {
+				t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxNetworkRetries+1, maxNetworkRetries)
+			}
+		})
+	}
+}
+
+func TestRetryWaitCancellationStopsBeforeNextRequest(t *testing.T) {
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			calls := 0
+			entered := make(chan struct{})
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+				})},
+				baseURL: "https://example.test",
+				retryWait: func(ctx context.Context, _ time.Duration) error {
+					close(entered)
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() { result <- method.call(ctx, c) }()
+			<-entered
+			cancel()
+
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("request did not return promptly after retry cancellation")
+			}
+			if calls != 1 {
+				t.Errorf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestFinalRateLimitResponseUpdatesAdaptiveDelayWithoutWaiting(t *testing.T) {
+	calls := 0
+	waits := 0
+	c := &Client{
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})},
+		baseURL: "https://example.test",
+		delay:   DefaultDelay / 4,
+		waitDelay: func(context.Context, time.Duration) error {
+			return nil
+		},
+		retryWait: func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
+	}
+
+	err := c.Get(context.Background(), "/test", nil)
+	if err == nil || !strings.Contains(err.Error(), "failed after 5 retries") {
+		t.Fatalf("error = %v, want HTTP retry exhaustion", err)
+	}
+	if calls != maxRetries+1 || waits != maxRetries {
+		t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxRetries+1, maxRetries)
+	}
+	if c.delay != maxDelay {
+		t.Errorf("adaptive delay = %v, want capped %v", c.delay, maxDelay)
+	}
+}
+
+func TestRawURLRateLimitDoesNotChangeAdaptiveDelay(t *testing.T) {
+	calls := 0
+	waits := 0
+	c := &Client{
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})},
+		baseURL: "https://example.test",
+		delay:   DefaultDelay,
+		waitDelay: func(context.Context, time.Duration) error {
+			return nil
+		},
+		retryWait: func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
+	}
+
+	_, err := c.GetRawURL(context.Background(), "https://example.test/test")
+	if err == nil || !strings.Contains(err.Error(), "failed after 5 retries") {
+		t.Fatalf("error = %v, want HTTP retry exhaustion", err)
+	}
+	if calls != maxRetries+1 || waits != maxRetries {
+		t.Errorf("calls=%d waits=%d, want %d calls and %d waits", calls, waits, maxRetries+1, maxRetries)
+	}
+	if c.delay != DefaultDelay {
+		t.Errorf("adaptive delay = %v, want unchanged %v", c.delay, DefaultDelay)
+	}
+}
+
+type retryMethodCase struct {
+	name string
+	call func(context.Context, *Client) error
+}
+
+func retryMethodCases() []retryMethodCase {
+	return []retryMethodCase{
+		{name: "Get", call: func(ctx context.Context, c *Client) error { return c.Get(ctx, "/test", nil) }},
+		{name: "GetRaw", call: func(ctx context.Context, c *Client) error { _, err := c.GetRaw(ctx, "/test"); return err }},
+		{name: "GetRawURL", call: func(ctx context.Context, c *Client) error {
+			_, err := c.GetRawURL(ctx, "https://example.test/test")
+			return err
+		}},
+		{name: "Post", call: func(ctx context.Context, c *Client) error {
+			return c.Post(ctx, "/test", map[string]string{"key": "value"}, nil)
+		}},
+	}
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed *int
+}
+
+func (r *trackingReadCloser) Close() error {
+	*r.closed++
+	return nil
 }
 
 func TestGetRawURLIsolatesHeaders(t *testing.T) {
