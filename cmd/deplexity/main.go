@@ -2,12 +2,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +35,21 @@ var (
 )
 
 var errIncompleteThreadExport = errors.New("thread export incomplete")
+
+const (
+	pdfHelperArg      = "__pdf-render-helper"
+	maxPDFRequestSize = 100 * 1024 * 1024
+	maxPDFErrorSize   = 64 * 1024
+)
+
+var pdfCommand = func(ctx context.Context) (*exec.Cmd, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, executable, pdfHelperArg)
+	return cmd, nil
+}
 
 // CLI defines the top-level command structure.
 type CLI struct {
@@ -69,14 +90,15 @@ func (cmd *LoginCmd) Run(ctx context.Context) error {
 
 // ExportCmd handles data export.
 type ExportCmd struct {
-	Output     string   `short:"o" default:"deplexity-export" help:"Output directory."`
-	Format     []string `short:"f" default:"json,markdown" help:"Export formats (json, markdown, pdf)." enum:"json,markdown,pdf"`
-	Threads    bool     `help:"Export threads." default:"true" negatable:""`
-	Spaces     bool     `help:"Export spaces/collections." default:"true" negatable:""`
-	Profile    bool     `help:"Export user profile." default:"true" negatable:""`
-	Delay      int      `help:"Delay between API requests in milliseconds." default:"500"`
-	Refresh    bool     `help:"Re-fetch the thread list and updated thread details." default:"false"`
-	PDFWorkers int      `help:"Number of parallel workers for PDF generation (0 = auto-detect CPU count)." default:"0" name:"pdf-workers"`
+	Output     string        `short:"o" default:"deplexity-export" help:"Output directory."`
+	Format     []string      `short:"f" default:"json,markdown" help:"Export formats (json, markdown, pdf)." enum:"json,markdown,pdf"`
+	Threads    bool          `help:"Export threads." default:"true" negatable:""`
+	Spaces     bool          `help:"Export spaces/collections." default:"true" negatable:""`
+	Profile    bool          `help:"Export user profile." default:"true" negatable:""`
+	Delay      int           `help:"Delay between API requests in milliseconds." default:"500"`
+	Refresh    bool          `help:"Re-fetch the thread list and updated thread details." default:"false"`
+	PDFWorkers int           `help:"Number of parallel workers for PDF generation (0 = auto-detect CPU count)." default:"0" name:"pdf-workers"`
+	PDFTimeout time.Duration `help:"Maximum time to render one PDF (0 disables)." default:"30m" name:"pdf-timeout"`
 
 	verbose bool // set by main before Run
 }
@@ -86,6 +108,9 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	delay, err := requestDelay(cmd.Delay)
 	if err != nil {
 		return err
+	}
+	if cmd.PDFTimeout < 0 {
+		return fmt.Errorf("--pdf-timeout must be non-negative")
 	}
 
 	session, err := auth.LoadSession()
@@ -668,11 +693,6 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 			}
 
 			var rendered atomic.Int64
-			workCh := make(chan int, workers)
-			errCh := make(chan error, 1)
-			pdfCtx, pdfCancel := context.WithCancel(ctx)
-			defer pdfCancel()
-			var wg sync.WaitGroup
 
 			// Progress printer (100ms ticker, normal mode only).
 			progressDone := make(chan struct{})
@@ -691,55 +711,29 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 				}()
 			}
 
-			// Spawn workers.
-			for w := 0; w < workers; w++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for i := range workCh {
-						if cmd.verbose {
-							fmt.Printf("  PDF: [%d/%d] %s\n", rendered.Load()+1, total, threads[i].Title)
-						}
-						if err := exp.ExportThread(&threads[i]); err != nil {
-							select {
-							case errCh <- err:
-							default:
-							}
-							pdfCancel()
-							return
-						}
-						rendered.Add(1)
-					}
-				}()
-			}
-
-			// Feed work.
-		feedLoop:
-			for i := range threads {
-				select {
-				case <-pdfCtx.Done():
-					break feedLoop
-				case workCh <- i:
+			err := runPDFWorkers(ctx, threads, workers, func(ctx context.Context, thread *models.Thread) error {
+				if cmd.verbose {
+					fmt.Printf("  PDF: [%d/%d] %s\n", rendered.Load()+1, total, thread.Title)
 				}
-			}
-			close(workCh)
-			wg.Wait()
+				if err := renderPDFIsolated(ctx, cmd.PDFTimeout, thread, exp.ThreadPDFPath(thread)); err != nil {
+					return err
+				}
+				rendered.Add(1)
+				return nil
+			})
 			close(progressDone)
 
 			// Final progress line.
 			n := rendered.Load()
-			if n < int64(total) && ctx.Err() != nil {
+			if ctx.Err() != nil {
 				fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
 				fmt.Printf("  Cancelling...\n")
 				return ctx.Err()
 			}
 			fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
 
-			// Check for worker errors.
-			select {
-			case err := <-errCh:
+			if err != nil {
 				return err
-			default:
 			}
 		}
 
@@ -750,6 +744,186 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 		}
 	}
 
+	return nil
+}
+
+type pdfRenderRequest struct {
+	Thread models.Thread `json:"thread"`
+}
+
+type pdfRenderFunc func(context.Context, *models.Thread) error
+
+func runPDFWorkers(ctx context.Context, threads []models.Thread, workers int, render pdfRenderFunc) error {
+	if len(threads) == 0 {
+		return ctx.Err()
+	}
+	if workers <= 0 {
+		return fmt.Errorf("PDF worker count must be positive")
+	}
+	pdfCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var next atomic.Int64
+	var firstErr error
+	var errOnce sync.Once
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if pdfCtx.Err() != nil {
+					return
+				}
+				i := int(next.Add(1) - 1)
+				if i >= len(threads) {
+					return
+				}
+				if pdfCtx.Err() != nil {
+					return
+				}
+				if err := render(pdfCtx, &threads[i]); err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return firstErr
+}
+
+func renderPDFIsolated(ctx context.Context, timeout time.Duration, thread *models.Thread, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("could not create thread directory: %w", err)
+	}
+	staging, err := os.CreateTemp(filepath.Dir(targetPath), ".thread.pdf.render-*")
+	if err != nil {
+		return fmt.Errorf("could not create PDF staging file: %w", err)
+	}
+	stagingPath := staging.Name()
+	defer os.Remove(stagingPath)
+
+	renderCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		renderCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
+	request := pdfRenderRequest{Thread: *thread}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("could not encode PDF render request: %w", err)
+	}
+	if len(requestJSON) > maxPDFRequestSize {
+		return fmt.Errorf("PDF render request for thread %q (%s) exceeds the %d-byte limit", thread.Title, thread.UUID, maxPDFRequestSize)
+	}
+	cmd, err := pdfCommand(renderCtx)
+	if err != nil {
+		return fmt.Errorf("could not locate PDF renderer: %w", err)
+	}
+	cmd.Stdin = bytes.NewReader(requestJSON)
+	cmd.Stdout = staging
+	var stderr limitedBuffer
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if runErr != nil {
+		staging.Close()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if timeout > 0 && errors.Is(renderCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("PDF TIMEOUT: thread %q (%s) exceeded the %s per-thread limit; the renderer was terminated and no new PDF was published; any existing PDF was left unchanged; remaining PDF work was canceled", thread.Title, thread.UUID, timeout)
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message != "" {
+			return fmt.Errorf("render PDF for thread %q (%s): %s", thread.Title, thread.UUID, message)
+		}
+		return fmt.Errorf("render PDF for thread %q (%s): %w", thread.Title, thread.UUID, runErr)
+	}
+	if err := staging.Sync(); err != nil {
+		staging.Close()
+		return fmt.Errorf("could not flush PDF staging file: %w", err)
+	}
+	if err := staging.Close(); err != nil {
+		return fmt.Errorf("could not close PDF staging file: %w", err)
+	}
+	info, err := os.Stat(stagingPath)
+	if err != nil {
+		return fmt.Errorf("PDF renderer did not produce output for thread %q (%s): %w", thread.Title, thread.UUID, err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("PDF renderer produced an empty file for thread %q (%s)", thread.Title, thread.UUID)
+	}
+	if err := os.Chmod(stagingPath, 0644); err != nil {
+		return fmt.Errorf("could not set PDF permissions: %w", err)
+	}
+	if err := os.Rename(stagingPath, targetPath); err != nil {
+		return fmt.Errorf("could not publish PDF for thread %q (%s): %w", thread.Title, thread.UUID, err)
+	}
+	return nil
+}
+
+type limitedBuffer struct {
+	data      []byte
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := maxPDFErrorSize - len(b.data)
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		b.data = append(b.data, p[:remaining]...)
+	}
+	if remaining < len(p) {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	if b.truncated {
+		return string(b.data) + "... [truncated]"
+	}
+	return string(b.data)
+}
+
+func runPDFRenderHelper(in io.Reader, out io.Writer) error {
+	requestJSON, err := io.ReadAll(io.LimitReader(in, maxPDFRequestSize+1))
+	if err != nil {
+		return fmt.Errorf("could not read PDF render request: %w", err)
+	}
+	if len(requestJSON) > maxPDFRequestSize {
+		return fmt.Errorf("PDF render request exceeds the %d-byte limit", maxPDFRequestSize)
+	}
+	var request pdfRenderRequest
+	decoder := json.NewDecoder(bytes.NewReader(requestJSON))
+	if err := decoder.Decode(&request); err != nil {
+		return fmt.Errorf("could not decode PDF render request: %w", err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("PDF render request contains trailing JSON")
+		}
+		return fmt.Errorf("could not validate PDF render request: %w", err)
+	}
+	data, err := export.GenerateThreadPDF(&request.Thread)
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write(data); err != nil {
+		return fmt.Errorf("could not write generated PDF: %w", err)
+	}
 	return nil
 }
 
@@ -806,6 +980,14 @@ func (cmd *VersionCmd) Run(_ context.Context) error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == pdfHelperArg {
+		if err := runPDFRenderHelper(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 

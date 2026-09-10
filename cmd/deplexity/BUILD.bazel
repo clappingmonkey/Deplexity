@@ -33,5 +33,6 @@ go_test(
     deps = [
         "//internal/export",
         "//internal/models",
+        "@com_github_alecthomas_kong//:kong",
     ],
 )

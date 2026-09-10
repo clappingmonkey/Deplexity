@@ -49,7 +49,7 @@ Binary entrypoint: `cmd/deplexity/main.go`. Version/buildTime stamped via `x_def
 
 **For `login` only:** Chrome or Chromium is needed for browser-based authentication. If not found, Rod automatically downloads Chromium (~80MB, one-time, cached at `~/.cache/rod/`).
 
-**For `export --cookie` and PDF:** No browser required at any point. `login --cookie <TOKEN>` bypasses the browser entirely. PDF export uses `gpdf` (pure Go, no CGO, no browser subprocess).
+**For `export --cookie` and PDF:** No browser required at any point. `login --cookie <TOKEN>` bypasses the browser entirely. PDF export uses `gpdf` (pure Go, no CGO) in isolated helper subprocesses of the Deplexity binary so cancellation and per-thread timeouts can terminate a stuck renderer.
 
 ## Perplexity API Details
 
@@ -101,7 +101,7 @@ Use `--refresh` to force re-fetching the thread index.
 - Thread directories must be derived with `threadDirName`, not by sanitizing the slug directly; the UUID-derived identity suffix prevents normalized slug collisions across every exporter and space copy.
 - Signal handling: first Ctrl+C cancels the context (graceful stop after current operation), second Ctrl+C force-exits via default OS handler. Implemented via `signal.NotifyContext` + dedicated `signal.Notify` channel (avoids spurious message on normal exit).
 - PDF sources rendered as numbered list `"N. Title (domain)"` — avoids gpdf hang on long unbreakable URLs (S3 pre-signed URLs up to 1600 chars). Previous table layout caused infinite loops in gpdf's word-wrap.
-- Multi-threaded PDF export: `--pdf-workers` flag (default: `runtime.NumCPU()`). Each worker creates its own `gpdf.Document` so no locking needed.
+- Multi-threaded PDF export: `--pdf-workers` flag (default: `runtime.NumCPU()`). Each worker launches an isolated Deplexity helper subprocess that creates its own `gpdf.Document`. `--pdf-timeout` defaults to 30 minutes per thread (`0` disables); timeout errors identify the thread, terminate its helper, leave any existing canonical PDF unchanged, cancel remaining PDF work, and exit non-zero. Space PDFs copy the successfully rendered canonical thread PDF instead of invoking gpdf again.
 
 ## Bazel
 

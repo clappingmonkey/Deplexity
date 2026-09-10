@@ -108,7 +108,16 @@ deplexity export --delay 1000
 
 # Control PDF parallelism (default: auto-detect CPU count)
 deplexity export -f pdf --pdf-workers 4
+
+# Change the per-PDF render timeout (default: 30m; 0 disables)
+deplexity export -f pdf --pdf-timeout 1h
 ```
+
+Each PDF is rendered in an isolated helper process. Ctrl+C terminates active PDF
+renderers, and a renderer that exceeds `--pdf-timeout` is killed so one
+pathological document cannot block an unattended export forever. A timeout names
+the affected thread explicitly, leaves any existing PDF unchanged, cancels the
+remaining PDF work, and exits non-zero.
 
 ### Resumable Exports
 

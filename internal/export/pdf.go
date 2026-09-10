@@ -3,6 +3,7 @@ package export
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,8 +52,39 @@ func (e *PDFExporter) Close() {}
 
 // ExportThread generates a PDF for a single thread.
 func (e *PDFExporter) ExportThread(thread *models.Thread) error {
-	dir := e.threadDir(thread)
-	return writeThreadPDF(dir, thread)
+	data, err := GenerateThreadPDF(thread)
+	if err != nil {
+		return err
+	}
+	path := e.ThreadPDFPath(thread)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("could not create thread directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".thread.pdf.tmp-*")
+	if err != nil {
+		return fmt.Errorf("could not create temporary PDF: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not write PDF file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not flush PDF file: %w", err)
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not set PDF permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("could not close temporary PDF: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("could not publish PDF file: %w", err)
+	}
+	return nil
 }
 
 // ExportSpaces generates PDFs for threads within each space folder.
@@ -73,8 +105,8 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 			if thread == nil {
 				continue
 			}
-			dir := filepath.Join(e.OutputDir, "spaces", spaceDirs[i], "threads", threadDirName(thread.Slug, thread.UUID))
-			if err := writeThreadPDF(dir, thread); err != nil {
+			dst := filepath.Join(e.OutputDir, "spaces", spaceDirs[i], "threads", threadDirName(thread.Slug, thread.UUID), "thread.pdf")
+			if err := copyFileContext(ctx, e.ThreadPDFPath(thread), dst); err != nil {
 				return err
 			}
 		}
@@ -82,12 +114,8 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 	return nil
 }
 
-// writeThreadPDF generates a PDF for a thread into the given directory.
-func writeThreadPDF(dir string, thread *models.Thread) error {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("could not create thread directory: %w", err)
-	}
-
+// GenerateThreadPDF generates PDF bytes for a thread.
+func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
 	doc := gpdf.NewDocument(
 		gpdf.WithPageSize(gpdf.Letter),
 		gpdf.WithMargins(document.Edges{
@@ -199,18 +227,77 @@ func writeThreadPDF(dir string, thread *models.Thread) error {
 
 	data, err := doc.Generate()
 	if err != nil {
-		return fmt.Errorf("could not generate PDF: %w", err)
+		return nil, fmt.Errorf("could not generate PDF: %w", err)
 	}
-
-	pdfPath := filepath.Join(dir, "thread.pdf")
-	if err := os.WriteFile(pdfPath, data, 0644); err != nil {
-		return fmt.Errorf("could not write PDF file: %w", err)
-	}
-
-	return nil
+	return data, nil
 }
 
-// threadDir returns the output directory for a thread.
-func (e *PDFExporter) threadDir(thread *models.Thread) string {
-	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID))
+// ThreadPDFPath returns the canonical PDF path for a thread.
+func (e *PDFExporter) ThreadPDFPath(thread *models.Thread) string {
+	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID), "thread.pdf")
+}
+
+func copyFileContext(ctx context.Context, src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("could not open source PDF: %w", err)
+	}
+	defer in.Close()
+	srcInfo, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("could not inspect source PDF: %w", err)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("source PDF is not a regular file: %s", src)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("could not create space thread directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".thread.pdf.tmp-*")
+	if err != nil {
+		return fmt.Errorf("could not create temporary PDF: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	buf := make([]byte, 64*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			tmp.Close()
+			return err
+		}
+		n, readErr := in.Read(buf)
+		if n > 0 {
+			if _, err := tmp.Write(buf[:n]); err != nil {
+				tmp.Close()
+				return fmt.Errorf("could not copy PDF: %w", err)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			tmp.Close()
+			return fmt.Errorf("could not read source PDF: %w", readErr)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not flush copied PDF: %w", err)
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("could not set PDF permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("could not close temporary PDF: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("could not publish space PDF: %w", err)
+	}
+	return nil
 }

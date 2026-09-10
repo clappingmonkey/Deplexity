@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alecthomas/kong"
 
 	"github.com/clappingmonkey/deplexity/internal/export"
 	"github.com/clappingmonkey/deplexity/internal/models"
@@ -93,6 +99,277 @@ func TestExportRejectsNegativeDelayBeforeSessionLoad(t *testing.T) {
 	if err := cmd.Run(context.Background()); err == nil || err.Error() != "--delay must be non-negative" {
 		t.Fatalf("Run error = %v, want negative delay validation", err)
 	}
+}
+
+func TestExportRejectsNegativePDFTimeoutBeforeSessionLoad(t *testing.T) {
+	cmd := &ExportCmd{PDFTimeout: -time.Second}
+	err := cmd.Run(context.Background())
+	if err == nil || err.Error() != "--pdf-timeout must be non-negative" {
+		t.Fatalf("Run error = %v, want negative timeout validation", err)
+	}
+}
+
+func TestPDFTimeoutDefault(t *testing.T) {
+	var cli CLI
+	parser, err := kong.New(&cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Parse([]string{"export"}); err != nil {
+		t.Fatal(err)
+	}
+	if cli.Export.PDFTimeout != 30*time.Minute {
+		t.Fatalf("PDFTimeout = %v, want 30m", cli.Export.PDFTimeout)
+	}
+}
+
+func TestRenderPDFIsolatedTimeoutIsExplicitAndPreservesExistingPDF(t *testing.T) {
+	restore := usePDFTestProcess(t, "block", "")
+	defer restore()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "thread.pdf")
+	if err := os.WriteFile(target, []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	thread := &models.Thread{UUID: "thread-123", Title: "Slow report"}
+	err := renderPDFIsolated(context.Background(), 50*time.Millisecond, thread, target)
+	if err == nil {
+		t.Fatal("expected PDF timeout")
+	}
+	for _, want := range []string{"PDF TIMEOUT", `thread "Slow report" (thread-123)`, "50ms per-thread limit", "renderer was terminated", "no new PDF was published", "existing PDF was left unchanged", "remaining PDF work was canceled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("timeout error %q does not contain %q", err, want)
+		}
+	}
+	data, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "existing" {
+		t.Fatalf("existing PDF = %q, want unchanged", data)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".thread.pdf.render-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("staging files remain after timeout: %v", matches)
+	}
+}
+
+func TestRenderPDFIsolatedCancellationTerminatesRenderer(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	restore := usePDFTestProcess(t, "block", marker)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	thread := &models.Thread{UUID: "thread-123", Title: "Canceled report"}
+	result := make(chan error, 1)
+	go func() {
+		result <- renderPDFIsolated(ctx, 30*time.Minute, thread, filepath.Join(t.TempDir(), "thread.pdf"))
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("renderer process did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	start := time.Now()
+	cancel()
+	err := <-result
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("renderPDFIsolated error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("canceled renderer returned after %v", elapsed)
+	}
+}
+
+func TestRenderPDFIsolatedPublishesCompletedPDF(t *testing.T) {
+	restore := usePDFTestProcess(t, "write", "")
+	defer restore()
+
+	target := filepath.Join(t.TempDir(), "thread.pdf")
+	thread := &models.Thread{UUID: "thread-123", Title: "Completed report"}
+	if err := renderPDFIsolated(context.Background(), 0, thread, target); err != nil {
+		t.Fatalf("renderPDFIsolated: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "rendered" {
+		t.Fatalf("published PDF = %q, want rendered", data)
+	}
+}
+
+func TestRenderPDFIsolatedRejectsEmptyOutput(t *testing.T) {
+	restore := usePDFTestProcess(t, "empty", "")
+	defer restore()
+
+	target := filepath.Join(t.TempDir(), "thread.pdf")
+	thread := &models.Thread{UUID: "thread-123", Title: "Empty report"}
+	err := renderPDFIsolated(context.Background(), time.Minute, thread, target)
+	if err == nil || !strings.Contains(err.Error(), "produced an empty file") {
+		t.Fatalf("renderPDFIsolated error = %v, want empty output error", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target PDF exists after empty output: %v", err)
+	}
+}
+
+func TestRenderPDFIsolatedZeroTimeoutHasNoInternalDeadline(t *testing.T) {
+	previous := pdfCommand
+	defer func() { pdfCommand = previous }()
+	pdfCommand = func(ctx context.Context) (*exec.Cmd, error) {
+		if _, ok := ctx.Deadline(); ok {
+			t.Fatal("zero PDF timeout added an internal deadline")
+		}
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestPDFRendererProcess")
+		cmd.Env = append(os.Environ(), "DEPLEXITY_PDF_TEST_PROCESS=1", "DEPLEXITY_PDF_TEST_MODE=write")
+		return cmd, nil
+	}
+	thread := &models.Thread{UUID: "thread-123", Title: "No timeout"}
+	if err := renderPDFIsolated(context.Background(), 0, thread, filepath.Join(t.TempDir(), "thread.pdf")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunPDFRenderHelper(t *testing.T) {
+	request, err := json.Marshal(pdfRenderRequest{Thread: models.Thread{UUID: "thread-123", Title: "Helper test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runPDFRenderHelper(bytes.NewReader(request), &output); err != nil {
+		t.Fatalf("runPDFRenderHelper: %v", err)
+	}
+	if output.Len() == 0 {
+		t.Fatal("helper produced an empty PDF")
+	}
+}
+
+func TestRunPDFRenderHelperRejectsInvalidInput(t *testing.T) {
+	if err := runPDFRenderHelper(strings.NewReader("not-json"), io.Discard); err == nil || !strings.Contains(err.Error(), "could not decode PDF render request") {
+		t.Fatalf("runPDFRenderHelper error = %v, want decode error", err)
+	}
+}
+
+func TestRunPDFRenderHelperRejectsTrailingJSON(t *testing.T) {
+	input := `{"thread":{"uuid":"thread-123"}} {"unexpected":true}`
+	if err := runPDFRenderHelper(strings.NewReader(input), io.Discard); err == nil || !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("runPDFRenderHelper error = %v, want trailing JSON error", err)
+	}
+}
+
+func TestLimitedBufferCapsChildDiagnostics(t *testing.T) {
+	var buffer limitedBuffer
+	payload := strings.Repeat("x", maxPDFErrorSize+100)
+	if n, err := buffer.Write([]byte(payload)); err != nil || n != len(payload) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if got := buffer.String(); len(got) > maxPDFErrorSize+len("... [truncated]") || !strings.HasSuffix(got, "... [truncated]") {
+		t.Fatalf("bounded diagnostics length/suffix = %d, %q", len(got), got[len(got)-20:])
+	}
+}
+
+func TestRunPDFWorkersStopsQueuedWorkAfterFailure(t *testing.T) {
+	threads := []models.Thread{{UUID: "first"}, {UUID: "second"}, {UUID: "queued"}}
+	failure := errors.New("render failed")
+	release := make(chan struct{})
+	defer close(release)
+	var calls atomic.Int64
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runPDFWorkers(context.Background(), threads, 2, func(ctx context.Context, thread *models.Thread) error {
+			calls.Add(1)
+			if thread.UUID == "first" {
+				return failure
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-release:
+				return nil
+			}
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, failure) {
+			t.Fatalf("runPDFWorkers error = %v, want render failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workers did not stop after first failure")
+	}
+	if got := calls.Load(); got > 2 {
+		t.Fatalf("render calls = %d, want no queued work after failure", got)
+	}
+}
+
+func TestRunPDFWorkersCancellationStartsNoWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int64
+	err := runPDFWorkers(ctx, []models.Thread{{UUID: "thread"}}, 1, func(context.Context, *models.Thread) error {
+		calls.Add(1)
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runPDFWorkers error = %v, want context.Canceled", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("render calls = %d, want 0", calls.Load())
+	}
+}
+
+func usePDFTestProcess(t *testing.T, mode, marker string) func() {
+	t.Helper()
+	previous := pdfCommand
+	pdfCommand = func(ctx context.Context) (*exec.Cmd, error) {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestPDFRendererProcess")
+		cmd.Env = append(os.Environ(), "DEPLEXITY_PDF_TEST_PROCESS=1", "DEPLEXITY_PDF_TEST_MODE="+mode, "DEPLEXITY_PDF_TEST_MARKER="+marker)
+		return cmd, nil
+	}
+	return func() { pdfCommand = previous }
+}
+
+func TestPDFRendererProcess(t *testing.T) {
+	if os.Getenv("DEPLEXITY_PDF_TEST_PROCESS") != "1" {
+		return
+	}
+	var request pdfRenderRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		os.Exit(2)
+	}
+	if marker := os.Getenv("DEPLEXITY_PDF_TEST_MARKER"); marker != "" {
+		if err := os.WriteFile(marker, nil, 0600); err != nil {
+			os.Exit(5)
+		}
+	}
+	switch os.Getenv("DEPLEXITY_PDF_TEST_MODE") {
+	case "block":
+		for {
+			time.Sleep(time.Hour)
+		}
+	case "write":
+		if _, err := os.Stdout.Write([]byte("rendered")); err != nil {
+			os.Exit(3)
+		}
+	case "empty":
+	default:
+		os.Exit(4)
+	}
+	os.Exit(0)
 }
 
 func TestResumePoint(t *testing.T) {
