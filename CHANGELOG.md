@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/clappingmonkey/Deplexity/compare/v0.4.0...v0.4.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* avoid final retry backoff ([#79](https://github.com/clappingmonkey/Deplexity/issues/79)) ([031662c](https://github.com/clappingmonkey/Deplexity/commit/031662ce44ea17cd9da79f7d99dbb3f3915d1ffe))
+* **deps:** update module golang.org/x/net to v0.59.0 ([#77](https://github.com/clappingmonkey/Deplexity/issues/77)) ([bafa836](https://github.com/clappingmonkey/Deplexity/commit/bafa836ecb57b22eb082f347ad7b7f793730027c))
+* make PDF rendering interruptible ([#80](https://github.com/clappingmonkey/Deplexity/issues/80)) ([9710080](https://github.com/clappingmonkey/Deplexity/commit/9710080c21a5d4aee2d61c93d848ffecd9a9f472))
+
 ## [0.4.0](https://github.com/clappingmonkey/Deplexity/compare/v0.3.0...v0.4.0) (2026-09-08)
 
 
