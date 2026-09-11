@@ -918,6 +918,71 @@ func TestFetchThreadDetailsFailedRefreshDoesNotUseStaleCache(t *testing.T) {
 	}
 }
 
+func TestFetchThreadDetailsReportsStaleSourcesCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	oldUpdatedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	stale := &models.Thread{
+		UUID:      "thread-1",
+		Slug:      "thread-1",
+		UpdatedAt: oldUpdatedAt,
+		Complete:  true,
+		Entries:   []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+	}
+	if err := jsonExp.ExportThread(stale); err != nil {
+		t.Fatalf("seed stale thread: %v", err)
+	}
+	sourcePaths, err := filepath.Glob(filepath.Join(dir, "threads", "*", "sources.json"))
+	if err != nil {
+		t.Fatalf("find sources file: %v", err)
+	}
+	if len(sourcePaths) != 1 {
+		t.Fatalf("source paths = %v, want one", sourcePaths)
+	}
+	sourcesPath := sourcePaths[0]
+	if err := os.Remove(sourcesPath); err != nil {
+		t.Fatalf("remove sources file: %v", err)
+	}
+	if err := os.Mkdir(sourcesPath, 0755); err != nil {
+		t.Fatalf("create blocking sources directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcesPath, "keep"), []byte("blocked"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	refs := []models.ThreadRef{{
+		UUID:              stale.UUID,
+		Slug:              stale.Slug,
+		UpdatedAt:         oldUpdatedAt.Add(time.Hour),
+		PreviousUpdatedAt: oldUpdatedAt,
+	}}
+	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		return &models.Thread{UUID: stale.UUID, Slug: stale.Slug, UpdatedAt: refs[0].UpdatedAt, Complete: true}, nil
+	}
+
+	cmd := &ExportCmd{Refresh: true}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch)
+	if err != nil {
+		t.Fatalf("fetchThreadDetails: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("thread counted as successful after cleanup failure: %#v", threads)
+	}
+	if len(failures) != 1 || failures[0].Stage != models.ThreadExportStageWrite || !strings.Contains(failures[0].Error, "remove stale sources") {
+		t.Fatalf("failures = %#v, want stale sources write failure", failures)
+	}
+	ref := models.ThreadRef{UUID: stale.UUID, Slug: stale.Slug}
+	if _, err := jsonExp.LoadCompleteThread(ref); err == nil {
+		t.Fatal("LoadCompleteThread accepted cache after cleanup failure")
+	}
+	partial, err := jsonExp.LoadThread(ref)
+	if err != nil {
+		t.Fatalf("LoadThread: %v", err)
+	}
+	if partial.Complete {
+		t.Fatal("thread cache remains complete after cleanup failure")
+	}
+}
+
 func TestFetchThreadDetailsCancellationTakesPrecedence(t *testing.T) {
 	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
 	refs := []models.ThreadRef{{UUID: "thread-1"}, {UUID: "thread-2"}}

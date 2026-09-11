@@ -131,15 +131,8 @@ func (e *JSONExporter) ExportThread(thread *models.Thread) error {
 		return err
 	}
 
-	// Write sources separately for easy access
-	var allSources []models.Source
-	for _, entry := range thread.Entries {
-		allSources = append(allSources, entry.Sources...)
-	}
-	if len(allSources) > 0 {
-		if err := writeJSON(filepath.Join(dir, "sources.json"), allSources); err != nil {
-			return err
-		}
+	if err := writeThreadSources(dir, thread); err != nil {
+		return err
 	}
 	if current.Complete {
 		if err := writeJSON(threadPath, &current); err != nil {
@@ -240,18 +233,11 @@ func (e *JSONExporter) ExportSpaces(ctx context.Context, spaces []models.Space, 
 			if err := os.MkdirAll(threadDir, 0755); err != nil {
 				return fmt.Errorf("could not create space thread directory: %w", err)
 			}
-			if err := writeJSON(filepath.Join(threadDir, "thread.json"), thread); err != nil {
+			if err := writeThreadSources(threadDir, thread); err != nil {
 				return err
 			}
-			// Write sources separately.
-			var allSources []models.Source
-			for _, entry := range thread.Entries {
-				allSources = append(allSources, entry.Sources...)
-			}
-			if len(allSources) > 0 {
-				if err := writeJSON(filepath.Join(threadDir, "sources.json"), allSources); err != nil {
-					return err
-				}
+			if err := writeJSON(filepath.Join(threadDir, "thread.json"), thread); err != nil {
+				return err
 			}
 		}
 	}
@@ -300,6 +286,23 @@ func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
 // threadDir returns the output directory for a thread.
 func (e *JSONExporter) threadDir(thread *models.Thread) string {
 	return filepath.Join(e.OutputDir, "threads", threadDirName(thread.Slug, thread.UUID))
+}
+
+// writeThreadSources keeps the optional sources sidecar in sync with thread data.
+func writeThreadSources(dir string, thread *models.Thread) error {
+	var sources []models.Source
+	for _, entry := range thread.Entries {
+		sources = append(sources, entry.Sources...)
+	}
+
+	sourcesPath := filepath.Join(dir, "sources.json")
+	if len(sources) > 0 {
+		return writeJSON(sourcesPath, sources)
+	}
+	if err := os.Remove(sourcesPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("could not remove stale sources file %s: %w", sourcesPath, err)
+	}
+	return nil
 }
 
 // writeSpaceSkills writes each skill's SKILL.md body into a skills/ subfolder

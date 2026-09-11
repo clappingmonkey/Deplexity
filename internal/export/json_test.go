@@ -223,6 +223,64 @@ func TestExportThreadMarksCacheIncompleteUntilSidecarsSucceed(t *testing.T) {
 	}
 }
 
+func TestExportThreadRemovesStaleSources(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	thread := &models.Thread{
+		UUID:     "thread-1",
+		Slug:     "thread-1",
+		Complete: true,
+		Entries:  []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+	}
+	if err := exporter.ExportThread(thread); err != nil {
+		t.Fatalf("ExportThread with sources: %v", err)
+	}
+	sourcesPath := filepath.Join(exporter.threadDir(thread), "sources.json")
+	if _, err := os.Stat(sourcesPath); err != nil {
+		t.Fatalf("sources.json was not written: %v", err)
+	}
+
+	thread.Entries = nil
+	if err := exporter.ExportThread(thread); err != nil {
+		t.Fatalf("ExportThread without sources: %v", err)
+	}
+	if _, err := os.Stat(sourcesPath); !os.IsNotExist(err) {
+		t.Fatalf("stale sources.json remains (err=%v)", err)
+	}
+	if _, err := exporter.LoadCompleteThread(models.ThreadRef{UUID: thread.UUID, Slug: thread.Slug}); err != nil {
+		t.Fatalf("LoadCompleteThread after cleanup: %v", err)
+	}
+}
+
+func TestExportThreadCleanupFailureLeavesCacheIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	thread := &models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true}
+	threadDir := exporter.threadDir(thread)
+	sourcesPath := filepath.Join(threadDir, "sources.json")
+	if err := os.MkdirAll(sourcesPath, 0755); err != nil {
+		t.Fatalf("create blocking sources directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcesPath, "keep"), []byte("blocked"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+
+	if err := exporter.ExportThread(thread); err == nil || !strings.Contains(err.Error(), "remove stale sources") {
+		t.Fatalf("error = %v, want stale sources removal failure", err)
+	}
+	ref := models.ThreadRef{UUID: thread.UUID, Slug: thread.Slug}
+	if _, err := exporter.LoadCompleteThread(ref); err == nil {
+		t.Fatal("LoadCompleteThread accepted cache after sidecar cleanup failure")
+	}
+	partial, err := exporter.LoadThread(ref)
+	if err != nil {
+		t.Fatalf("LoadThread: %v", err)
+	}
+	if partial.Complete {
+		t.Fatal("thread.json remains complete after sidecar cleanup failure")
+	}
+}
+
 func TestExportSpacesWritesInstructionsAndSkills(t *testing.T) {
 	dir := t.TempDir()
 	exporter := &JSONExporter{OutputDir: dir}
@@ -369,6 +427,75 @@ func TestExportSpacesSeparatesCollidingThreadSlugs(t *testing.T) {
 		if written.UUID != thread.UUID {
 			t.Errorf("%s contains UUID %q, want %q", path, written.UUID, thread.UUID)
 		}
+	}
+}
+
+func TestExportSpacesRemovesStaleThreadSources(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	space := models.Space{UUID: "space-1", Name: "Space", ThreadUUIDs: []string{"thread-1"}}
+	thread := models.Thread{
+		UUID:    "thread-1",
+		Slug:    "thread-1",
+		Entries: []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+	}
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, []models.Thread{thread}); err != nil {
+		t.Fatalf("ExportSpaces with sources: %v", err)
+	}
+	threadDir := filepath.Join(dir, "spaces", spaceDirNames([]models.Space{space})[0], "threads", threadDirName(thread.Slug, thread.UUID))
+	sourcesPath := filepath.Join(threadDir, "sources.json")
+	if _, err := os.Stat(sourcesPath); err != nil {
+		t.Fatalf("space sources.json was not written: %v", err)
+	}
+
+	thread.Entries = nil
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, []models.Thread{thread}); err != nil {
+		t.Fatalf("ExportSpaces without sources: %v", err)
+	}
+	if _, err := os.Stat(sourcesPath); !os.IsNotExist(err) {
+		t.Fatalf("stale space sources.json remains (err=%v)", err)
+	}
+}
+
+func TestExportSpacesReportsStaleThreadSourcesCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	space := models.Space{UUID: "space-1", Name: "Space", ThreadUUIDs: []string{"thread-1"}}
+	thread := models.Thread{
+		UUID:    "thread-1",
+		Slug:    "thread-1",
+		Entries: []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+	}
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, []models.Thread{thread}); err != nil {
+		t.Fatalf("ExportSpaces with sources: %v", err)
+	}
+	threadDir := filepath.Join(dir, "spaces", spaceDirNames([]models.Space{space})[0], "threads", threadDirName(thread.Slug, thread.UUID))
+	sourcesPath := filepath.Join(threadDir, "sources.json")
+	if err := os.Remove(sourcesPath); err != nil {
+		t.Fatalf("remove sources file: %v", err)
+	}
+	if err := os.Mkdir(sourcesPath, 0755); err != nil {
+		t.Fatalf("create blocking sources directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcesPath, "keep"), []byte("blocked"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+
+	thread.Entries = nil
+	if err := exporter.ExportSpaces(context.Background(), []models.Space{space}, []models.Thread{thread}); err == nil || !strings.Contains(err.Error(), "remove stale sources") {
+		t.Fatalf("error = %v, want stale sources cleanup failure", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(threadDir, "thread.json"))
+	if err != nil {
+		t.Fatalf("read previous thread.json: %v", err)
+	}
+	var previous models.Thread
+	if err := json.Unmarshal(data, &previous); err != nil {
+		t.Fatalf("unmarshal previous thread.json: %v", err)
+	}
+	if len(previous.Entries) != 1 {
+		t.Fatalf("thread.json was replaced despite cleanup failure: %#v", previous)
 	}
 }
 
