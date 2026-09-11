@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/clappingmonkey/Deplexity/compare/v0.4.1...v0.4.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* remove stale source sidecars ([#84](https://github.com/clappingmonkey/Deplexity/issues/84)) ([650c488](https://github.com/clappingmonkey/Deplexity/commit/650c48807a0155540375c6f7614c42cc71618285))
+* report exported bookmark count ([#81](https://github.com/clappingmonkey/Deplexity/issues/81)) ([f9fc33d](https://github.com/clappingmonkey/Deplexity/commit/f9fc33dde429a0539a428991f41236df299c9eef))
+
 ## [0.4.1](https://github.com/clappingmonkey/Deplexity/compare/v0.4.0...v0.4.1) (2026-09-10)
 
 
