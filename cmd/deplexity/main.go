@@ -298,6 +298,9 @@ func buildManifest(formats []string, threads []models.Thread, refs []models.Thre
 		if manifest.ThreadIndex[t.UUID] == "" {
 			manifest.ThreadIndex[t.UUID] = t.Slug
 		}
+		if t.Bookmarked {
+			manifest.Counts.Bookmarks++
+		}
 		for _, e := range t.Entries {
 			manifest.Counts.Sources += len(e.Sources)
 		}

@@ -9,7 +9,10 @@ import (
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
-const apiVersion = "2.18"
+const (
+	apiVersion              = "2.18"
+	bookmarkStateBookmarked = "BOOKMARKED"
+)
 
 type getter interface {
 	Get(context.Context, string, any) error
@@ -212,6 +215,9 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 
 		// A cursor boundary can re-include the last entry, so dedupe by UUID.
 		for _, e := range page.Entries {
+			if e.BookmarkState == bookmarkStateBookmarked {
+				thread.Bookmarked = true
+			}
 			if seen[e.UUID] {
 				continue
 			}

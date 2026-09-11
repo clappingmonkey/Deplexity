@@ -11,6 +11,8 @@ import (
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
+const threadCacheVersion = 1
+
 // JSONExporter writes data as formatted JSON files.
 type JSONExporter struct {
 	OutputDir string
@@ -75,7 +77,9 @@ func (e *JSONExporter) LoadThread(ref models.ThreadRef) (*models.Thread, error) 
 			if !os.IsNotExist(err) {
 				return nil, err
 			}
-			lastErr = err
+			if lastErr == nil {
+				lastErr = err
+			}
 			continue
 		}
 		var thread models.Thread
@@ -84,6 +88,10 @@ func (e *JSONExporter) LoadThread(ref models.ThreadRef) (*models.Thread, error) 
 		}
 		if thread.UUID != ref.UUID {
 			lastErr = fmt.Errorf("thread cache %s contains UUID %q, want %q", threadPath, thread.UUID, ref.UUID)
+			continue
+		}
+		if thread.CacheVersion != threadCacheVersion {
+			lastErr = fmt.Errorf("thread cache %s has version %d, want %d", threadPath, thread.CacheVersion, threadCacheVersion)
 			continue
 		}
 		return &thread, nil
@@ -111,13 +119,15 @@ func (e *JSONExporter) ExportThread(thread *models.Thread) error {
 	// copy first so a later sidecar failure cannot leave an older complete cache
 	// looking valid, then write the complete marker only after all sidecars.
 	threadPath := filepath.Join(dir, "thread.json")
-	if thread.Complete {
-		incomplete := *thread
+	current := *thread
+	current.CacheVersion = threadCacheVersion
+	if current.Complete {
+		incomplete := current
 		incomplete.Complete = false
 		if err := writeJSON(threadPath, &incomplete); err != nil {
 			return err
 		}
-	} else if err := writeJSON(threadPath, thread); err != nil {
+	} else if err := writeJSON(threadPath, &current); err != nil {
 		return err
 	}
 
@@ -131,8 +141,8 @@ func (e *JSONExporter) ExportThread(thread *models.Thread) error {
 			return err
 		}
 	}
-	if thread.Complete {
-		if err := writeJSON(threadPath, thread); err != nil {
+	if current.Complete {
+		if err := writeJSON(threadPath, &current); err != nil {
 			return err
 		}
 	}

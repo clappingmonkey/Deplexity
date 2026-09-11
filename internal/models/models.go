@@ -16,15 +16,16 @@ type User struct {
 
 // Thread represents a conversation thread.
 type Thread struct {
-	UUID       string    `json:"uuid"`
-	Slug       string    `json:"slug"`
-	Title      string    `json:"title"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	SpaceUUID  string    `json:"space_uuid,omitempty"`
-	Entries    []Entry   `json:"entries,omitempty"`
-	Bookmarked bool      `json:"bookmarked,omitempty"`
-	Complete   bool      `json:"complete"`
+	UUID         string    `json:"uuid"`
+	Slug         string    `json:"slug"`
+	Title        string    `json:"title"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	SpaceUUID    string    `json:"space_uuid,omitempty"`
+	Entries      []Entry   `json:"entries,omitempty"`
+	Bookmarked   bool      `json:"bookmarked,omitempty"`
+	Complete     bool      `json:"complete"`
+	CacheVersion int       `json:"cache_version,omitempty"`
 	// NextCursor is the pagination cursor to resume from when Complete is
 	// false. The entries already fetched are persisted alongside it.
 	NextCursor string `json:"next_cursor,omitempty"`
