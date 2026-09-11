@@ -753,40 +753,60 @@ func TestFetchThreadDetailsPreservesSlugThroughCheckpointAndManifest(t *testing.
 	}
 }
 
-func TestFetchThreadDetailsMigratesLegacyCacheWithoutFetch(t *testing.T) {
-	dir := t.TempDir()
-	legacyDir := filepath.Join(dir, "threads", "thread-1")
-	if err := os.MkdirAll(legacyDir, 0755); err != nil {
-		t.Fatalf("create legacy directory: %v", err)
-	}
-	legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true}
-	data, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy cache: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "thread.json"), data, 0600); err != nil {
-		t.Fatalf("write legacy cache: %v", err)
-	}
-	jsonExp := &export.JSONExporter{OutputDir: dir}
-	ref := models.ThreadRef{UUID: "thread-1", Slug: "human-readable-slug"}
-	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
-		t.Fatal("fetch called for complete legacy cache")
-		return nil, nil
+func TestFetchThreadDetailsRefetchesLegacyCachesFromStart(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete bool
+		cursor   string
+	}{
+		{name: "complete cache", complete: true},
+		{name: "partial checkpoint", cursor: "legacy-cursor"},
 	}
 
-	cmd := &ExportCmd{}
-	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, []models.ThreadRef{ref}, fetch)
-	if err != nil {
-		t.Fatalf("fetchThreadDetails: %v", err)
-	}
-	if len(failures) != 0 || len(threads) != 1 || threads[0].Slug != ref.Slug {
-		t.Fatalf("threads=%#v failures=%#v", threads, failures)
-	}
-	if !jsonExp.HasCanonicalThread(ref) {
-		t.Fatal("legacy cache was not written to the canonical path")
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "thread.json")); err != nil {
-		t.Errorf("legacy cache was removed: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			legacyDir := filepath.Join(dir, "threads", "thread-1")
+			if err := os.MkdirAll(legacyDir, 0755); err != nil {
+				t.Fatalf("create legacy directory: %v", err)
+			}
+			legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: tt.complete, NextCursor: tt.cursor}
+			data, err := json.Marshal(legacy)
+			if err != nil {
+				t.Fatalf("marshal legacy cache: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(legacyDir, "thread.json"), data, 0600); err != nil {
+				t.Fatalf("write legacy cache: %v", err)
+			}
+			jsonExp := &export.JSONExporter{OutputDir: dir}
+			ref := models.ThreadRef{UUID: "thread-1", Slug: "human-readable-slug"}
+			var called bool
+			fetch := func(_ context.Context, uuid string, resume *models.Thread, _ func(*models.Thread) error) (*models.Thread, error) {
+				called = true
+				if resume != nil {
+					t.Fatalf("resume = %#v, want legacy cache fetched from page one", resume)
+				}
+				return &models.Thread{UUID: uuid, Slug: uuid, Bookmarked: true, Complete: true}, nil
+			}
+
+			cmd := &ExportCmd{}
+			threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, []models.ThreadRef{ref}, fetch)
+			if err != nil {
+				t.Fatalf("fetchThreadDetails: %v", err)
+			}
+			if !called {
+				t.Fatal("fetch was not called for legacy cache")
+			}
+			if len(failures) != 0 || len(threads) != 1 || threads[0].Slug != ref.Slug || !threads[0].Bookmarked {
+				t.Fatalf("threads=%#v failures=%#v", threads, failures)
+			}
+			if !jsonExp.HasCanonicalThread(ref) {
+				t.Fatal("legacy cache was not written to the canonical path")
+			}
+			if _, err := os.Stat(filepath.Join(legacyDir, "thread.json")); err != nil {
+				t.Errorf("legacy cache was removed: %v", err)
+			}
+		})
 	}
 }
 
@@ -995,33 +1015,35 @@ func TestFetchThreadDetailsCancellationPreservesPendingRetryState(t *testing.T) 
 func TestBuildManifestReportsThreadCompleteness(t *testing.T) {
 	threads := []models.Thread{
 		{
-			UUID:     "thread-1",
-			Slug:     "first",
-			Complete: true,
-			Entries:  []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
+			UUID:       "thread-1",
+			Slug:       "first",
+			Bookmarked: true,
+			Complete:   true,
+			Entries:    []models.Entry{{Sources: []models.Source{{URL: "https://example.com"}}}},
 		},
+		{UUID: "thread-2", Slug: "second", Complete: true},
 	}
-	failures := []models.ThreadExportFailure{{UUID: "thread-2", Stage: models.ThreadExportStageFetch, Error: "failed"}}
+	failures := []models.ThreadExportFailure{{UUID: "thread-3", Stage: models.ThreadExportStageFetch, Error: "failed"}}
 	account := &models.Account{GlobalSkills: []models.Skill{{ID: "skill-1"}}}
 
-	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "first"}, {UUID: "thread-2", Slug: "failed-slug"}}
+	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "first"}, {UUID: "thread-2", Slug: "second"}, {UUID: "thread-3", Slug: "failed-slug"}}
 	manifest := buildManifest([]string{"json"}, threads, refs, []models.Space{{UUID: "space-1"}}, account, failures)
 	if manifest.ThreadsComplete {
 		t.Fatal("ThreadsComplete = true, want false")
 	}
-	if manifest.ExpectedThreads != 2 || manifest.Counts.Threads != 1 {
-		t.Errorf("expected=%d exported=%d, want 2 and 1", manifest.ExpectedThreads, manifest.Counts.Threads)
+	if manifest.ExpectedThreads != 3 || manifest.Counts.Threads != 2 {
+		t.Errorf("expected=%d exported=%d, want 3 and 2", manifest.ExpectedThreads, manifest.Counts.Threads)
 	}
-	if manifest.Counts.Spaces != 1 || manifest.Counts.Sources != 1 || manifest.Counts.GlobalSkills != 1 {
-		t.Errorf("counts = %#v, want one space, source, and global skill", manifest.Counts)
+	if manifest.Counts.Spaces != 1 || manifest.Counts.Sources != 1 || manifest.Counts.Bookmarks != 1 || manifest.Counts.GlobalSkills != 1 {
+		t.Errorf("counts = %#v, want one space, source, bookmark, and global skill", manifest.Counts)
 	}
-	if len(manifest.FailedThreads) != 1 || manifest.FailedThreads[0].UUID != "thread-2" {
-		t.Errorf("FailedThreads = %#v, want thread-2", manifest.FailedThreads)
+	if len(manifest.FailedThreads) != 1 || manifest.FailedThreads[0].UUID != "thread-3" {
+		t.Errorf("FailedThreads = %#v, want thread-3", manifest.FailedThreads)
 	}
 	if manifest.ThreadIndex["thread-1"] != "first" {
 		t.Errorf("ThreadIndex = %#v, want exported thread", manifest.ThreadIndex)
 	}
-	if manifest.ThreadIndex["thread-2"] != "failed-slug" {
+	if manifest.ThreadIndex["thread-3"] != "failed-slug" {
 		t.Errorf("ThreadIndex = %#v, want failed thread list slug preserved", manifest.ThreadIndex)
 	}
 

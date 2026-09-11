@@ -227,7 +227,7 @@ func TestGetThreadPaginatesByCursor(t *testing.T) {
 		},
 		{
 			// A cursor boundary re-includes the last entry of the prior page.
-			Entries:     []ThreadEntry{{UUID: "entry-2"}, {UUID: "entry-3"}},
+			Entries:     []ThreadEntry{{UUID: "entry-2", BookmarkState: "BOOKMARKED"}, {UUID: "entry-3"}},
 			HasNextPage: false,
 			NextCursor:  cursorPtr(""),
 		},
@@ -261,6 +261,39 @@ func TestGetThreadPaginatesByCursor(t *testing.T) {
 	}
 	if thread.NextCursor != "" {
 		t.Errorf("NextCursor = %q, want cleared on completion", thread.NextCursor)
+	}
+	if !thread.Bookmarked {
+		t.Error("bookmark state from duplicate cursor-boundary entry was not preserved")
+	}
+}
+
+func TestGetThreadMapsBookmarkState(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{name: "bookmarked", state: "BOOKMARKED", want: true},
+		{name: "not bookmarked", state: "NOT_BOOKMARKED", want: false},
+		{name: "empty", state: "", want: false},
+		{name: "unknown", state: "UNKNOWN", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getter := &threadGetter{responses: []ThreadDetailResponse{{
+				Entries:     []ThreadEntry{{UUID: "entry-1", BookmarkState: tt.state}},
+				HasNextPage: false,
+			}}}
+
+			thread, err := GetThread(context.Background(), getter, "thread-1", nil, nil)
+			if err != nil {
+				t.Fatalf("GetThread: %v", err)
+			}
+			if thread.Bookmarked != tt.want {
+				t.Errorf("Bookmarked = %t, want %t for state %q", thread.Bookmarked, tt.want, tt.state)
+			}
+		})
 	}
 }
 
@@ -319,7 +352,7 @@ func TestGetThreadReturnsErrorWhenLaterPageFails(t *testing.T) {
 func TestGetThreadCheckpointsProgressBeforeFailure(t *testing.T) {
 	getter := &threadGetter{responses: []ThreadDetailResponse{{
 		ThreadMetadata: ThreadMetadata{Title: "Long thread"},
-		Entries:        []ThreadEntry{{UUID: "entry-1"}, {UUID: "entry-2"}},
+		Entries:        []ThreadEntry{{UUID: "entry-1", BookmarkState: "BOOKMARKED"}, {UUID: "entry-2"}},
 		HasNextPage:    true,
 		NextCursor:     cursorPtr("cursor-1"),
 	}}}
@@ -348,6 +381,9 @@ func TestGetThreadCheckpointsProgressBeforeFailure(t *testing.T) {
 	if cp.Title != "Long thread" {
 		t.Errorf("checkpoint Title = %q, want metadata preserved", cp.Title)
 	}
+	if !cp.Bookmarked {
+		t.Error("checkpoint did not preserve bookmark state")
+	}
 }
 
 func TestGetThreadResumesFromCheckpoint(t *testing.T) {
@@ -364,6 +400,7 @@ func TestGetThreadResumesFromCheckpoint(t *testing.T) {
 		Slug:       "human-readable-slug",
 		Title:      "Long thread",
 		SpaceUUID:  "space-1",
+		Bookmarked: true,
 		Entries:    []models.Entry{{UUID: "entry-1"}, {UUID: "entry-2"}},
 		NextCursor: "cursor-1",
 	}
@@ -396,6 +433,9 @@ func TestGetThreadResumesFromCheckpoint(t *testing.T) {
 	}
 	if thread.Slug != resume.Slug || thread.SpaceUUID != resume.SpaceUUID {
 		t.Errorf("thread metadata = %#v, want resume slug and space preserved", thread)
+	}
+	if !thread.Bookmarked {
+		t.Error("completed thread did not preserve checkpoint bookmark state")
 	}
 }
 

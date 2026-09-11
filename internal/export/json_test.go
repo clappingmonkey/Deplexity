@@ -36,6 +36,30 @@ func TestLoadCompleteThread(t *testing.T) {
 	if !loaded.Complete {
 		t.Fatal("loaded thread is not complete")
 	}
+	if loaded.CacheVersion != threadCacheVersion {
+		t.Errorf("CacheVersion = %d, want %d", loaded.CacheVersion, threadCacheVersion)
+	}
+}
+
+func TestLoadThreadRejectsLegacyCacheVersion(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	ref := models.ThreadRef{UUID: "thread-1", Slug: "thread-1"}
+	threadDir := filepath.Join(dir, "threads", threadDirName(ref.Slug, ref.UUID))
+	if err := os.MkdirAll(threadDir, 0755); err != nil {
+		t.Fatalf("create thread directory: %v", err)
+	}
+	data, err := json.Marshal(models.Thread{UUID: ref.UUID, Slug: ref.Slug, Complete: true})
+	if err != nil {
+		t.Fatalf("marshal legacy thread: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "thread.json"), data, 0600); err != nil {
+		t.Fatalf("write legacy thread: %v", err)
+	}
+
+	if _, err := exporter.LoadThread(ref); err == nil || !strings.Contains(err.Error(), "version 0") {
+		t.Fatalf("error = %v, want legacy cache version rejection", err)
+	}
 }
 
 func TestLoadCompleteThreadPreservesMetadata(t *testing.T) {
@@ -62,7 +86,7 @@ func TestLoadThreadFallsBackToLegacyUUIDDirectory(t *testing.T) {
 	if err := os.MkdirAll(legacyDir, 0755); err != nil {
 		t.Fatalf("create legacy directory: %v", err)
 	}
-	legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true}
+	legacy := models.Thread{UUID: "thread-1", Slug: "thread-1", Complete: true, CacheVersion: threadCacheVersion}
 	data, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatalf("marshal legacy thread: %v", err)
@@ -95,7 +119,7 @@ func TestLoadThreadUsesFirstMatchingUUIDCandidate(t *testing.T) {
 		if err := os.MkdirAll(candidateDir, 0755); err != nil {
 			t.Fatalf("create candidate directory: %v", err)
 		}
-		data, err := json.Marshal(models.Thread{UUID: uuid, Slug: slug, Title: title, Complete: true})
+		data, err := json.Marshal(models.Thread{UUID: uuid, Slug: slug, Title: title, Complete: true, CacheVersion: threadCacheVersion})
 		if err != nil {
 			t.Fatalf("marshal candidate: %v", err)
 		}
@@ -127,7 +151,7 @@ func TestLoadThreadUsesFirstMatchingUUIDCandidate(t *testing.T) {
 func TestLoadThreadFindsCanonicalCacheWrittenBeforeSlugWasKnown(t *testing.T) {
 	dir := t.TempDir()
 	exporter := &JSONExporter{OutputDir: dir}
-	thread := &models.Thread{UUID: "thread-1", Complete: true}
+	thread := &models.Thread{UUID: "thread-1", Complete: true, CacheVersion: threadCacheVersion}
 	if err := exporter.ExportThread(thread); err != nil {
 		t.Fatalf("ExportThread: %v", err)
 	}
@@ -155,7 +179,7 @@ func TestLoadThreadRejectsWrongUUIDInEveryCandidate(t *testing.T) {
 		if err := os.MkdirAll(candidateDir, 0755); err != nil {
 			t.Fatalf("create candidate directory: %v", err)
 		}
-		data, err := json.Marshal(models.Thread{UUID: "wrong-thread", Complete: true})
+		data, err := json.Marshal(models.Thread{UUID: "wrong-thread", Complete: true, CacheVersion: threadCacheVersion})
 		if err != nil {
 			t.Fatalf("marshal candidate: %v", err)
 		}
