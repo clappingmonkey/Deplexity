@@ -184,8 +184,16 @@ func (c *Client) Get(ctx context.Context, path string, dest interface{}) error {
 		httpAttempt = 0
 
 		if dest != nil {
-			if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+			decoder := json.NewDecoder(resp.Body)
+			if err := decoder.Decode(dest); err != nil {
 				return fmt.Errorf("could not decode response from %s: %w", path, err)
+			}
+			var extra interface{}
+			if err := decoder.Decode(&extra); err != io.EOF {
+				if err == nil {
+					err = errors.New("multiple JSON values")
+				}
+				return fmt.Errorf("could not decode response from %s: trailing data: %w", path, err)
 			}
 		}
 

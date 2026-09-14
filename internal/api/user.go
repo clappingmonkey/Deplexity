@@ -39,15 +39,15 @@ func ValidateSession(ctx context.Context, c *client.Client) (*SessionResponse, e
 		}
 		return nil, fmt.Errorf("failed to validate session: %w", err)
 	}
-	if !sessionIsAuthenticated(&raw) {
+	if !SessionIsAuthenticated(&raw) {
 		return nil, client.ErrNotAuthenticated
 	}
 	return &raw, nil
 }
 
-// sessionIsAuthenticated reports whether a session response carries a real user
+// SessionIsAuthenticated reports whether a session response carries a real user
 // identity. A half-valid session can return HTTP 200 with an empty user, which
 // must be treated as unauthenticated.
-func sessionIsAuthenticated(s *SessionResponse) bool {
+func SessionIsAuthenticated(s *SessionResponse) bool {
 	return s != nil && (s.User.ID != "" || s.User.Email != "")
 }

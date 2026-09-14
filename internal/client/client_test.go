@@ -50,6 +50,59 @@ func TestClientGet(t *testing.T) {
 	}
 }
 
+func TestClientGetRejectsTrailingJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"message":"ok"}{"extra":true}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: srv.URL}
+	var response struct {
+		Message string `json:"message"`
+	}
+	err := c.Get(context.Background(), "/test", &response)
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("error = %v, want trailing JSON rejection", err)
+	}
+}
+
+func TestClientGetRejectsTrailingGarbage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"message":"ok"} garbage`)
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: srv.URL}
+	var response struct {
+		Message string `json:"message"`
+	}
+	err := c.Get(context.Background(), "/test", &response)
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("error = %v, want trailing garbage rejection", err)
+	}
+}
+
+func TestClientGetAllowsTrailingWhitespace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "{\"message\":\"ok\"}\n \t")
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: srv.URL}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if err := c.Get(context.Background(), "/test", &response); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if response.Message != "ok" {
+		t.Errorf("Message = %q, want ok", response.Message)
+	}
+}
+
 func TestClientGetUnauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
