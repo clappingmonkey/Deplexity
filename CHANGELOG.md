@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/clappingmonkey/Deplexity/compare/v0.4.2...v0.4.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* require session user identity ([#86](https://github.com/clappingmonkey/Deplexity/issues/86)) ([880c61c](https://github.com/clappingmonkey/Deplexity/commit/880c61cacbd76bacbda13ea5a99fa744a6fd3488))
+
 ## [0.4.2](https://github.com/clappingmonkey/Deplexity/compare/v0.4.1...v0.4.2) (2026-09-14)
 
 
