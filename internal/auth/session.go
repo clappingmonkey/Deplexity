@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"time"
 
+	"github.com/clappingmonkey/deplexity/internal/api"
 	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -25,6 +27,10 @@ type SessionInfo struct {
 // ValidateSession checks if the saved session is still valid by calling
 // Perplexity's NextAuth session endpoint.
 func ValidateSession(ctx context.Context, session *models.SavedSession) (*SessionInfo, error) {
+	if session == nil {
+		return &SessionInfo{Valid: false}, nil
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create cookie jar: %w", err)
@@ -66,30 +72,29 @@ func ValidateSession(ctx context.Context, session *models.SavedSession) (*Sessio
 		return &SessionInfo{Valid: false}, nil
 	}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return &SessionInfo{Valid: false}, nil
+	return decodeSessionInfo(resp.Body), nil
+}
+
+func decodeSessionInfo(r io.Reader) *SessionInfo {
+	if r == nil {
+		return &SessionInfo{Valid: false}
 	}
 
-	// NextAuth returns an empty object {} for invalid sessions.
-	if len(result) == 0 {
-		return &SessionInfo{Valid: false}, nil
+	var result api.SessionResponse
+	decoder := json.NewDecoder(r)
+	if err := decoder.Decode(&result); err != nil {
+		return &SessionInfo{Valid: false}
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF || !api.SessionIsAuthenticated(&result) {
+		return &SessionInfo{Valid: false}
 	}
 
-	info := &SessionInfo{Valid: true}
-
-	if user, ok := result["user"].(map[string]interface{}); ok {
-		if email, ok := user["email"].(string); ok {
-			info.Email = email
-		}
+	info := &SessionInfo{Valid: true, Email: result.User.Email}
+	if expires, err := time.Parse(time.RFC3339, result.Expires); err == nil {
+		info.ExpiresAt = expires
 	}
-	if expires, ok := result["expires"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, expires); err == nil {
-			info.ExpiresAt = t
-		}
-	}
-
-	return info, nil
+	return info
 }
 
 // CookieLogin creates a session from a manually provided session token,
