@@ -8,7 +8,7 @@ require (
 	github.com/gpdf-dev/gpdf v1.0.13
 	github.com/refraction-networking/utls v1.8.2
 	github.com/schollz/progressbar/v3 v3.19.1
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 )
 
 require (
