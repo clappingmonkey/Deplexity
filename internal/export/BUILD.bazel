@@ -6,6 +6,7 @@ go_library(
         "json.go",
         "markdown.go",
         "pdf.go",
+        "pdf_fingerprint.go",
         "util.go",
     ],
     importpath = "github.com/clappingmonkey/deplexity/internal/export",
@@ -24,6 +25,7 @@ go_test(
     srcs = [
         "json_test.go",
         "markdown_test.go",
+        "pdf_fingerprint_test.go",
         "pdf_test.go",
         "util_test.go",
     ],

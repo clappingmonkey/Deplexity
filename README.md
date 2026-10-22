@@ -111,13 +111,54 @@ deplexity export -f pdf --pdf-workers 4
 
 # Change the per-PDF render timeout (default: 30m; 0 disables)
 deplexity export -f pdf --pdf-timeout 1h
+
+# Re-render every PDF, even ones that are already up to date
+deplexity export -f pdf --force-pdf
 ```
+
+Run `deplexity export --help` for the full flag list.
 
 Each PDF is rendered in an isolated helper process. Ctrl+C terminates active PDF
 renderers, and a renderer that exceeds `--pdf-timeout` is killed so one
 pathological document cannot block an unattended export forever. A timeout names
 the affected thread explicitly, leaves any existing PDF unchanged, cancels the
 remaining PDF work, and exits non-zero.
+
+#### Incremental PDF export
+
+PDF export skips threads whose PDF is already up to date, so re-running an export
+only renders new or changed threads:
+
+```
+  PDF: 3/3 rendered, 689 up to date (3 workers)
+```
+
+A thread's PDF is re-rendered when anything it displays changes (title, created
+date, questions, answers, models, source titles or source domains), when a
+Deplexity release bumps its internal PDF layout version, or when the bundled PDF
+library is upgraded. Changes to data the PDF does not show, such as update
+timestamps, source snippets, or the rest of a source URL, do not trigger a
+re-render.
+
+PDFs exported by a Deplexity version without this feature have no fingerprint, so
+the first PDF export after upgrading re-renders every thread once.
+
+Each rendered PDF has a small fingerprint file next to it,
+`threads/<thread-slug>-<thread-id>/.thread.pdf.fingerprint`. The fingerprint is
+removed before a PDF is re-rendered and written only after the new PDF has been
+saved, so a failed, timed-out, or interrupted render is retried on the next run.
+Deleting a fingerprint file (or the PDF) forces that thread to be re-rendered.
+
+`--force-pdf` ignores fingerprints and re-renders every PDF. `--refresh` re-fetches
+thread data but does not by itself force a re-render; threads whose displayed
+content changed are re-rendered automatically. After all PDFs render successfully,
+every space folder receives a fresh copy of the canonical `thread.pdf`, including
+threads that were skipped, so space folders stay in sync without re-rendering.
+
+Run only one export at a time against the same output directory. Concurrent
+exports into one directory are not supported: they share `thread_index.json`,
+`manifest.json`, and the PDF fingerprints, and can leave a PDF paired with
+another run's fingerprint.
 
 ### Resumable Exports
 
@@ -127,6 +168,8 @@ Export runs in two phases:
 2. **Phase 2 — Details**: Fetches full content for each thread. Already-fetched threads are skipped automatically.
 
 Use `--refresh` to force re-fetching the thread index (e.g., after new conversations).
+PDFs are then re-rendered only for threads whose content changed (see
+[Incremental PDF export](#incremental-pdf-export)).
 
 If one or more thread details cannot be fetched or written after retries, Deplexity
 keeps and renders every thread that completed successfully, writes the failure
@@ -165,6 +208,7 @@ deplexity-export/
         ├── thread.json
         ├── thread.md
         ├── thread.pdf
+        ├── .thread.pdf.fingerprint  # Hidden; lets later runs skip unchanged PDFs
         └── sources.json
 ```
 

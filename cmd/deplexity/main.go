@@ -99,8 +99,16 @@ type ExportCmd struct {
 	Refresh    bool          `help:"Re-fetch the thread list and updated thread details." default:"false"`
 	PDFWorkers int           `help:"Number of parallel workers for PDF generation (0 = auto-detect CPU count)." default:"0" name:"pdf-workers"`
 	PDFTimeout time.Duration `help:"Maximum time to render one PDF (0 disables)." default:"30m" name:"pdf-timeout"`
+	ForcePDF   bool          `help:"Re-render every PDF, even if its content and the PDF layout are unchanged (up-to-date PDFs are skipped by default)." default:"false" name:"force-pdf"`
 
 	verbose bool // set by main before Run
+}
+
+// Help implements kong.HelpProvider with details shown by "export --help".
+func (cmd *ExportCmd) Help() string {
+	return `PDF export is incremental. A thread's PDF is re-rendered only when the content it shows (title, date, questions, answers, models, source titles and domains) or the PDF layout or renderer version changed. The fingerprint of each rendered PDF is stored next to it in threads/<thread>/.thread.pdf.fingerprint.
+
+Use --force-pdf to re-render every PDF. --refresh re-fetches thread data but does not by itself re-render unchanged PDFs.`
 }
 
 func (cmd *ExportCmd) Run(ctx context.Context) error {
@@ -682,61 +690,108 @@ func (cmd *ExportCmd) exportFormat(ctx context.Context, format string, threads [
 		defer exp.Close()
 
 		if total > 0 {
-			// Determine worker count.
-			workers := cmd.PDFWorkers
-			maxWorkers := runtime.NumCPU()
-			if workers <= 0 {
-				workers = maxWorkers
-			}
-			if workers > maxWorkers {
-				workers = maxWorkers
-			}
-			if workers > total {
-				workers = total
-			}
-
-			var rendered atomic.Int64
-
-			// Progress printer (100ms ticker, normal mode only).
-			progressDone := make(chan struct{})
-			if !cmd.verbose {
-				go func() {
-					ticker := time.NewTicker(100 * time.Millisecond)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-ticker.C:
-							fmt.Printf("\r  PDF: %d/%d threads (%d workers)", rendered.Load(), total, workers)
-						case <-progressDone:
-							return
-						}
-					}
-				}()
-			}
-
-			err := runPDFWorkers(ctx, threads, workers, func(ctx context.Context, thread *models.Thread) error {
-				if cmd.verbose {
-					fmt.Printf("  PDF: [%d/%d] %s\n", rendered.Load()+1, total, thread.Title)
-				}
-				if err := renderPDFIsolated(ctx, cmd.PDFTimeout, thread, exp.ThreadPDFPath(thread)); err != nil {
+			// Skip threads whose PDF was already rendered from identical inputs.
+			pending := make([]models.Thread, 0, total)
+			for i := range threads {
+				if err := ctx.Err(); err != nil {
+					fmt.Printf("  Cancelling...\n")
 					return err
 				}
-				rendered.Add(1)
-				return nil
-			})
-			close(progressDone)
-
-			// Final progress line.
-			n := rendered.Load()
-			if ctx.Err() != nil {
-				fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
-				fmt.Printf("  Cancelling...\n")
-				return ctx.Err()
+				if !cmd.ForcePDF {
+					fingerprint, err := export.ThreadPDFFingerprint(&threads[i])
+					if err != nil {
+						return err
+					}
+					if exp.PDFUpToDate(&threads[i], fingerprint) {
+						if cmd.verbose {
+							fmt.Printf("  PDF: up to date, skipping %s\n", threads[i].Title)
+						}
+						continue
+					}
+				}
+				pending = append(pending, threads[i])
 			}
-			fmt.Printf("\r  PDF: %d/%d threads (%d workers)\n", n, total, workers)
-
-			if err != nil {
+			if err := ctx.Err(); err != nil {
+				fmt.Printf("  Cancelling...\n")
 				return err
+			}
+			upToDate := total - len(pending)
+
+			if len(pending) == 0 {
+				fmt.Printf("  PDF: all %d threads up to date (use --force-pdf to re-render)\n", total)
+			} else {
+				// Determine worker count.
+				workers := cmd.PDFWorkers
+				maxWorkers := runtime.NumCPU()
+				if workers <= 0 {
+					workers = maxWorkers
+				}
+				if workers > maxWorkers {
+					workers = maxWorkers
+				}
+				if workers > len(pending) {
+					workers = len(pending)
+				}
+
+				var rendered atomic.Int64
+				progress := func() string {
+					return fmt.Sprintf("\r  PDF: %d/%d rendered, %d up to date (%d workers)", rendered.Load(), len(pending), upToDate, workers)
+				}
+
+				// Progress printer (100ms ticker, normal mode only).
+				progressDone := make(chan struct{})
+				var progressWG sync.WaitGroup
+				if !cmd.verbose {
+					progressWG.Go(func() {
+						ticker := time.NewTicker(100 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ticker.C:
+								fmt.Print(progress())
+							case <-progressDone:
+								return
+							}
+						}
+					})
+				}
+
+				err := runPDFWorkers(ctx, pending, workers, func(ctx context.Context, thread *models.Thread) error {
+					if cmd.verbose {
+						fmt.Printf("  PDF: [%d/%d] %s\n", rendered.Load()+1, len(pending), thread.Title)
+					}
+					fingerprint, err := export.ThreadPDFFingerprint(thread)
+					if err != nil {
+						return err
+					}
+					// Drop the old fingerprint first and record the new one only
+					// after the PDF is published, so an interrupted or failed
+					// render is always retried on the next run.
+					if err := exp.RemovePDFFingerprint(thread); err != nil {
+						return err
+					}
+					if err := renderPDFIsolated(ctx, cmd.PDFTimeout, thread, exp.ThreadPDFPath(thread)); err != nil {
+						return err
+					}
+					if err := exp.WritePDFFingerprint(thread, fingerprint); err != nil {
+						return err
+					}
+					rendered.Add(1)
+					return nil
+				})
+				close(progressDone)
+				progressWG.Wait()
+
+				// Final progress line.
+				fmt.Println(progress())
+				if ctx.Err() != nil {
+					fmt.Printf("  Cancelling...\n")
+					return ctx.Err()
+				}
+
+				if err != nil {
+					return err
+				}
 			}
 		}
 
