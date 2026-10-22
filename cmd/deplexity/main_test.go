@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -205,8 +206,8 @@ func TestRenderPDFIsolatedPublishesCompletedPDF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "rendered" {
-		t.Fatalf("published PDF = %q, want rendered", data)
+	if string(data) != "rendered:thread-123" {
+		t.Fatalf("published PDF = %q, want rendered:thread-123", data)
 	}
 }
 
@@ -362,7 +363,7 @@ func TestPDFRendererProcess(t *testing.T) {
 			time.Sleep(time.Hour)
 		}
 	case "write":
-		if _, err := os.Stdout.Write([]byte("rendered")); err != nil {
+		if _, err := os.Stdout.Write([]byte("rendered:" + request.Thread.UUID)); err != nil {
 			os.Exit(3)
 		}
 	case "empty":
@@ -370,6 +371,277 @@ func TestPDFRendererProcess(t *testing.T) {
 		os.Exit(4)
 	}
 	os.Exit(0)
+}
+
+// countPDFRenders stubs the PDF helper with the given test mode and counts how
+// many times it is launched.
+func countPDFRenders(t *testing.T, mode string) *atomic.Int64 {
+	t.Helper()
+	previous := pdfCommand
+	var count atomic.Int64
+	pdfCommand = func(ctx context.Context) (*exec.Cmd, error) {
+		count.Add(1)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestPDFRendererProcess")
+		cmd.Env = append(os.Environ(), "DEPLEXITY_PDF_TEST_PROCESS=1", "DEPLEXITY_PDF_TEST_MODE="+mode)
+		return cmd, nil
+	}
+	t.Cleanup(func() { pdfCommand = previous })
+	return &count
+}
+
+func pdfSkipTestThreads() []models.Thread {
+	return []models.Thread{
+		{UUID: "thread-a", Slug: "thread-a", Title: "A", Entries: []models.Entry{{Query: "qa", Answer: "aa"}}},
+		{UUID: "thread-b", Slug: "thread-b", Title: "B", Entries: []models.Entry{{Query: "qb", Answer: "ab"}}},
+	}
+}
+
+// assertPDFsUpToDate checks that every thread's canonical PDF matches its
+// current fingerprint.
+func assertPDFsUpToDate(t *testing.T, exp *export.PDFExporter, threads []models.Thread) {
+	t.Helper()
+	for i := range threads {
+		fingerprint, err := export.ThreadPDFFingerprint(&threads[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exp.PDFUpToDate(&threads[i], fingerprint) {
+			t.Fatalf("thread %s not up to date after export", threads[i].UUID)
+		}
+	}
+}
+
+// TestExportPDFSkipsUpToDateThreads runs successive exports into one output
+// directory. Before each later run every PDF is overwritten with a "stale"
+// marker (fingerprints untouched), so a PDF still holding the marker afterwards
+// was skipped and one holding "rendered:<uuid>" was re-rendered.
+func TestExportPDFSkipsUpToDateThreads(t *testing.T) {
+	dir := t.TempDir()
+	threads := pdfSkipTestThreads()
+	exp := export.NewPDFExporter(dir)
+
+	runExport := func(force bool) {
+		t.Helper()
+		cmd := &ExportCmd{Output: dir, PDFTimeout: time.Minute, ForcePDF: force}
+		if err := cmd.exportFormat(context.Background(), "pdf", threads, nil, nil, nil); err != nil {
+			t.Fatalf("exportFormat: %v", err)
+		}
+		assertPDFsUpToDate(t, exp, threads)
+	}
+	markStale := func() {
+		t.Helper()
+		for i := range threads {
+			if err := os.WriteFile(exp.ThreadPDFPath(&threads[i]), []byte("stale"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	assertRendered := func(step string, count *atomic.Int64, want ...string) {
+		t.Helper()
+		if got := count.Load(); got != int64(len(want)) {
+			t.Fatalf("%s: PDF renders = %d, want %d", step, got, len(want))
+		}
+		for i := range threads {
+			data, err := os.ReadFile(exp.ThreadPDFPath(&threads[i]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantContent := "stale"
+			if slices.Contains(want, threads[i].UUID) {
+				wantContent = "rendered:" + threads[i].UUID
+			}
+			if string(data) != wantContent {
+				t.Fatalf("%s: PDF for %s = %q, want %q", step, threads[i].UUID, data, wantContent)
+			}
+		}
+	}
+
+	count := countPDFRenders(t, "write")
+	runExport(false)
+	assertRendered("first run", count, "thread-a", "thread-b")
+
+	markStale()
+	count = countPDFRenders(t, "write")
+	runExport(false)
+	assertRendered("unchanged run", count)
+
+	markStale()
+	threads[1].Entries[0].Answer = "changed"
+	count = countPDFRenders(t, "write")
+	runExport(false)
+	assertRendered("rendered change", count, "thread-b")
+
+	markStale()
+	threads[0].UpdatedAt = time.Now()
+	threads[0].Entries[0].Sources = []models.Source{{Title: "Doc", URL: "https://example.com/a", Snippet: "s"}}
+	count = countPDFRenders(t, "write")
+	runExport(false)
+	assertRendered("new source", count, "thread-a")
+
+	markStale()
+	threads[0].UpdatedAt = time.Now().Add(time.Hour)
+	threads[0].Entries[0].Sources[0].URL = "https://www.example.com/b?sig=1"
+	threads[0].Entries[0].Sources[0].Snippet = "changed snippet"
+	count = countPDFRenders(t, "write")
+	runExport(false)
+	assertRendered("unrendered changes", count)
+
+	markStale()
+	count = countPDFRenders(t, "write")
+	runExport(true)
+	assertRendered("force", count, "thread-a", "thread-b")
+}
+
+func TestExportPDFAllUpToDateHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	threads := pdfSkipTestThreads()
+	countPDFRenders(t, "write")
+	cmd := &ExportCmd{Output: dir, PDFTimeout: time.Minute}
+	if err := cmd.exportFormat(context.Background(), "pdf", threads, nil, nil, nil); err != nil {
+		t.Fatalf("initial exportFormat: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	for _, tt := range []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{name: "canceled", ctx: canceled, want: context.Canceled},
+		{name: "deadline", ctx: expired, want: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			count := countPDFRenders(t, "write")
+			if err := cmd.exportFormat(tt.ctx, "pdf", threads, nil, nil, nil); !errors.Is(err, tt.want) {
+				t.Fatalf("exportFormat error = %v, want %v", err, tt.want)
+			}
+			if count.Load() != 0 {
+				t.Fatalf("PDF renders = %d, want 0", count.Load())
+			}
+		})
+	}
+}
+
+// TestPDFHelperRendersFingerprintedInput locks the assumption that the helper
+// subprocess renders exactly what the parent fingerprinted: the thread survives
+// the pdfRenderRequest JSON round trip with an identical fingerprint and PDF.
+func TestPDFHelperRendersFingerprintedInput(t *testing.T) {
+	thread := &models.Thread{
+		UUID:      "thread-rt",
+		Slug:      "round-trip",
+		Title:     "Round trip <b>&</b> ünïcödé",
+		CreatedAt: time.Date(2026, 3, 4, 23, 59, 59, 123456789, time.FixedZone("EET", 2*60*60)),
+		UpdatedAt: time.Now(),
+		Entries: []models.Entry{{
+			Query:   "What?\nWhy?",
+			Answer:  "**Because** `code` and a table:\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+			Model:   "sonar",
+			Sources: []models.Source{{Title: "Doc", URL: "https://www.example.com/x?sig=abc", Snippet: "s", Favicon: "f"}},
+		}},
+	}
+	want, err := export.ThreadPDFFingerprint(thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPDF, err := export.GenerateThreadPDF(thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request, err := json.Marshal(pdfRenderRequest{Thread: *thread})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded pdfRenderRequest
+	if err := json.Unmarshal(request, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := export.ThreadPDFFingerprint(&decoded.Thread); err != nil || got != want {
+		t.Fatalf("round-tripped fingerprint = %q, %v; want %q", got, err, want)
+	}
+
+	var out bytes.Buffer
+	if err := runPDFRenderHelper(bytes.NewReader(request), &out); err != nil {
+		t.Fatalf("runPDFRenderHelper: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), wantPDF) {
+		t.Fatal("helper PDF differs from in-process PDF for the same fingerprint")
+	}
+}
+
+func TestExportPDFFailedRenderDropsFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	threads := pdfSkipTestThreads()[:1]
+	exp := export.NewPDFExporter(dir)
+
+	countPDFRenders(t, "write")
+	cmd := &ExportCmd{Output: dir, PDFTimeout: time.Minute}
+	if err := cmd.exportFormat(context.Background(), "pdf", threads, nil, nil, nil); err != nil {
+		t.Fatalf("initial exportFormat: %v", err)
+	}
+
+	threads[0].Entries[0].Answer = "changed"
+	countPDFRenders(t, "empty")
+	if err := cmd.exportFormat(context.Background(), "pdf", threads, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "produced an empty file") {
+		t.Fatalf("exportFormat error = %v, want empty output error", err)
+	}
+	if _, err := os.Stat(exp.ThreadPDFFingerprintPath(&threads[0])); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fingerprint remains after failed render: %v", err)
+	}
+	if data, err := os.ReadFile(exp.ThreadPDFPath(&threads[0])); err != nil || string(data) != "rendered:thread-a" {
+		t.Fatalf("previous PDF = %q, %v; want it left in place", data, err)
+	}
+
+	count := countPDFRenders(t, "write")
+	if err := cmd.exportFormat(context.Background(), "pdf", threads, nil, nil, nil); err != nil {
+		t.Fatalf("retry exportFormat: %v", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("retry PDF renders = %d, want 1", count.Load())
+	}
+	assertPDFsUpToDate(t, exp, threads)
+}
+
+func TestForcePDFFlag(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"export"}, want: false},
+		{args: []string{"export", "--force-pdf"}, want: true},
+	} {
+		var cli CLI
+		parser, err := kong.New(&cli)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parser.Parse(tt.args); err != nil {
+			t.Fatal(err)
+		}
+		if cli.Export.ForcePDF != tt.want {
+			t.Fatalf("%v: ForcePDF = %t, want %t", tt.args, cli.Export.ForcePDF, tt.want)
+		}
+	}
+}
+
+func TestExportHelpExplainsIncrementalPDF(t *testing.T) {
+	var cli CLI
+	var out bytes.Buffer
+	parser, err := kong.New(&cli, kong.Name("deplexity"), kong.Writers(&out, &out), kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = parser.Parse([]string{"export", "--help"})
+	// Kong wraps help text, so compare with whitespace collapsed.
+	help := strings.Join(strings.Fields(out.String()), " ")
+	for _, want := range []string{"--force-pdf", "PDF export is incremental", ".thread.pdf.fingerprint", "--refresh re-fetches thread data"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("export --help does not mention %q:\n%s", want, help)
+		}
+	}
 }
 
 func TestResumePoint(t *testing.T) {

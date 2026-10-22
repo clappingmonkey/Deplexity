@@ -50,8 +50,13 @@ func NewPDFExporter(outputDir string) *PDFExporter {
 // Close is a no-op kept for interface compatibility.
 func (e *PDFExporter) Close() {}
 
-// ExportThread generates a PDF for a single thread.
+// ExportThread generates a PDF for a single thread in-process and records its
+// fingerprint.
 func (e *PDFExporter) ExportThread(thread *models.Thread) error {
+	fingerprint, err := ThreadPDFFingerprint(thread)
+	if err != nil {
+		return err
+	}
 	data, err := GenerateThreadPDF(thread)
 	if err != nil {
 		return err
@@ -59,6 +64,11 @@ func (e *PDFExporter) ExportThread(thread *models.Thread) error {
 	path := e.ThreadPDFPath(thread)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("could not create thread directory: %w", err)
+	}
+	// Rendering happens in memory above and cannot touch the published PDF, so
+	// the old fingerprint only has to be dropped before the PDF is replaced.
+	if err := e.RemovePDFFingerprint(thread); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".thread.pdf.tmp-*")
 	if err != nil {
@@ -84,7 +94,7 @@ func (e *PDFExporter) ExportThread(thread *models.Thread) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("could not publish PDF file: %w", err)
 	}
-	return nil
+	return e.WritePDFFingerprint(thread, fingerprint)
 }
 
 // ExportSpaces generates PDFs for threads within each space folder.
@@ -114,8 +124,10 @@ func (e *PDFExporter) ExportSpaces(ctx context.Context, spaces []models.Space, t
 	return nil
 }
 
-// GenerateThreadPDF generates PDF bytes for a thread.
+// GenerateThreadPDF generates PDF bytes for a thread. It renders only the
+// values in pdfRenderInput so that ThreadPDFFingerprint covers every input.
 func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
+	input := newPDFRenderInput(thread)
 	doc := gpdf.NewDocument(
 		gpdf.WithPageSize(gpdf.Letter),
 		gpdf.WithMargins(document.Edges{
@@ -125,7 +137,7 @@ func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
 			Right:  document.In(0.75),
 		}),
 		gpdf.WithMetadata(document.DocumentMetadata{
-			Title:   thread.Title,
+			Title:   input.MetadataTitle,
 			Author:  "Deplexity",
 			Subject: "Perplexity AI Thread Export",
 		}),
@@ -144,21 +156,16 @@ func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
 
 	page := doc.AddPage()
 
-	title := thread.Title
-	if title == "" {
-		title = "Untitled Thread"
-	}
-
 	page.AutoRow(func(r *template.RowBuilder) {
 		r.Col(12, func(c *template.ColBuilder) {
-			c.Text(title, template.FontSize(20), template.Bold())
+			c.Text(input.Title, template.FontSize(20), template.Bold())
 		})
 	})
 
-	if !thread.CreatedAt.IsZero() {
+	if input.Created != "" {
 		page.AutoRow(func(r *template.RowBuilder) {
 			r.Col(12, func(c *template.ColBuilder) {
-				c.Text(fmt.Sprintf("Created: %s", thread.CreatedAt.Format("January 2, 2006")), template.FontSize(9), template.TextColor(pdf.Gray(0.5)))
+				c.Text(fmt.Sprintf("Created: %s", input.Created), template.FontSize(9), template.TextColor(pdf.Gray(0.5)))
 			})
 		})
 	}
@@ -169,7 +176,7 @@ func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
 		})
 	})
 
-	for i, entry := range thread.Entries {
+	for i, entry := range input.Entries {
 		if i > 0 {
 			page.AutoRow(func(r *template.RowBuilder) {
 				r.Col(12, func(c *template.ColBuilder) {
@@ -207,8 +214,7 @@ func GenerateThreadPDF(thread *models.Thread) ([]byte, error) {
 					c.Spacer(document.Mm(3))
 					c.Text("Sources", template.Bold(), template.FontSize(11))
 					c.Spacer(document.Mm(1))
-					for j, src := range entry.Sources {
-						label := formatSourceLine(j+1, src.Title, src.URL)
+					for _, label := range entry.Sources {
 						c.Text(label, template.FontSize(9), template.TextColor(pdf.Gray(0.3)))
 					}
 				})
