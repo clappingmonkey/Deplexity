@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/clappingmonkey/Deplexity/compare/v0.4.3...v0.5.0) (2026-10-22)
+
+
+### Features
+
+* skip re-rendering unchanged PDFs ([#108](https://github.com/clappingmonkey/Deplexity/issues/108)) ([8eb5432](https://github.com/clappingmonkey/Deplexity/commit/8eb5432a00ad53ca9a6fb57f5b8a7de8056ab4b3))
+
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/net to v0.60.0 ([#100](https://github.com/clappingmonkey/Deplexity/issues/100)) ([cdd4ec8](https://github.com/clappingmonkey/Deplexity/commit/cdd4ec8a57fdb994708ffe3690d56fa852600309))
+* **deps:** update module golang.org/x/net to v0.61.0 ([#102](https://github.com/clappingmonkey/Deplexity/issues/102)) ([61bf6a0](https://github.com/clappingmonkey/Deplexity/commit/61bf6a01231877a1a7370df1cc626dcd2f78170b))
+
 ## [0.4.3](https://github.com/clappingmonkey/Deplexity/compare/v0.4.2...v0.4.3) (2026-09-21)
 
 
