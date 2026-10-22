@@ -106,6 +106,14 @@ Use `--refresh` to force re-fetching the thread index. It does not imply `--forc
 - PDF fingerprints: bump `pdfLayoutVersion` in `internal/export/pdf_fingerprint.go` whenever `GenerateThreadPDF` layout, styling, fonts, or metadata change. Otherwise existing PDFs keep looking up to date and are never re-rendered. A field newly shown in the PDF must be added to `pdfRenderInput`, which `GenerateThreadPDF` renders from, so the fingerprint picks it up. The gpdf version comes from the `gpdf.Version` constant, not `debug.ReadBuildInfo()`, because rules_go 0.60 does not embed dependency versions in build info.
 - Concurrent exports into the same output directory are unsupported (no cross-process lock). Besides `thread_index.json`/`manifest.json`, two runs can interleave remove-fingerprint → publish-PDF → write-fingerprint and leave a PDF paired with the other run's fingerprint. This is documented in the README; add a directory lock before claiming support.
 
+## Pull Requests
+
+- **PR titles must follow Conventional Commits** (`type: subject` or `type(scope): subject`, e.g. `feat: skip re-rendering unchanged PDFs`). This overrides any generic guidance to use plain, prefix-free PR titles.
+- Enforced by the `PR Title (Conventional Commits)` job in `.github/workflows/test.yaml` (`amannn/action-semantic-pull-request`, default config). Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+- Why it matters: the repo allows **squash merges only**, so the PR title becomes the commit on `main` that release-please reads to choose the version bump and changelog entry (`feat` → minor, `fix` → patch, `!`/`BREAKING CHANGE` → major). Do not edit `CHANGELOG.md` by hand.
+- The workflow triggers on `pull_request` default types (`opened`, `synchronize`, `reopened`), not `edited`. After fixing a bad title with `gh pr edit <n> --title ...`, re-run the failed job (`gh run rerun <run-id> --failed`) or push a commit; editing the title alone does not re-trigger the check.
+- Fill in `.github/PULL_REQUEST_TEMPLATE.md`.
+
 ## Bazel
 
 - Bazel 9.1+ required (see `.bazelversion`)
