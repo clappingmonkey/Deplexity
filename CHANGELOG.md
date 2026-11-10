@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.1](https://github.com/clappingmonkey/Deplexity/compare/v0.5.0...v0.5.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/alecthomas/kong to v1.17.0 ([#115](https://github.com/clappingmonkey/Deplexity/issues/115)) ([eb1d6f8](https://github.com/clappingmonkey/Deplexity/commit/eb1d6f8251be3d4f35636ea6f4c1f02612ab9cb8))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.14 ([#120](https://github.com/clappingmonkey/Deplexity/issues/120)) ([b813e64](https://github.com/clappingmonkey/Deplexity/commit/b813e64670174ea10f9222aeb1d40c37b14ffac8))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.15 ([#122](https://github.com/clappingmonkey/Deplexity/issues/122)) ([343f47c](https://github.com/clappingmonkey/Deplexity/commit/343f47cbef6cfbf11a3332079584e07d55348619))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.17 ([#123](https://github.com/clappingmonkey/Deplexity/issues/123)) ([c547119](https://github.com/clappingmonkey/Deplexity/commit/c5471199ef475d3deff6f09ec80cb8ac4baa497f))
+* **deps:** update module golang.org/x/net to v0.62.0 ([#111](https://github.com/clappingmonkey/Deplexity/issues/111)) ([3d5fd4d](https://github.com/clappingmonkey/Deplexity/commit/3d5fd4d4770d5fd1aa9620573b2b74e35100b641))
+
 ## [0.5.0](https://github.com/clappingmonkey/Deplexity/compare/v0.4.3...v0.5.0) (2026-10-22)
 
 
