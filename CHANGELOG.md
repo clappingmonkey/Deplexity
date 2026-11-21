@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/clappingmonkey/Deplexity/compare/v0.5.1...v0.5.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.18 ([#129](https://github.com/clappingmonkey/Deplexity/issues/129)) ([8f7177f](https://github.com/clappingmonkey/Deplexity/commit/8f7177f700764478a45b678669eab413f94ab729))
+* **deps:** update module golang.org/x/net to v0.63.0 ([#125](https://github.com/clappingmonkey/Deplexity/issues/125)) ([f2bd88b](https://github.com/clappingmonkey/Deplexity/commit/f2bd88b2878ea679beb7996454be18501864f98f))
+
 ## [0.5.1](https://github.com/clappingmonkey/Deplexity/compare/v0.5.0...v0.5.1) (2026-11-16)
 
 
