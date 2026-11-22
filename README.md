@@ -23,7 +23,7 @@ Perplexity AI has no official data export feature. Your research threads, curate
 
 ## Installation
 
-### From source (requires Go 1.26+)
+### From source (requires Go 1.27+)
 
 ```bash
 go install github.com/clappingmonkey/deplexity/cmd/deplexity@latest
@@ -305,7 +305,7 @@ Key design decisions:
 
 ## Requirements
 
-- **Go 1.26+** (build only)
+- **Go 1.27+** (build only)
 - **Chrome/Chromium** (for `deplexity login` only — auto-downloaded if missing)
 - No runtime dependencies for `export` or `login --cookie`
 

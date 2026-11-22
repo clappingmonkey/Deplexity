@@ -233,7 +233,6 @@ func TestClientMethodsCancellationDuringPacingSkipsRequest(t *testing.T) {
 		call func(context.Context, *Client) error
 	}{
 		{name: "Get", call: func(ctx context.Context, c *Client) error { return c.Get(ctx, "/test", nil) }},
-		{name: "GetRaw", call: func(ctx context.Context, c *Client) error { _, err := c.GetRaw(ctx, "/test"); return err }},
 		{name: "GetRawURL", call: func(ctx context.Context, c *Client) error { _, err := c.GetRawURL(ctx, srv.URL+"/test"); return err }},
 		{name: "Post", call: func(ctx context.Context, c *Client) error { return c.Post(ctx, "/test", nil, nil) }},
 	}
@@ -520,7 +519,6 @@ type retryMethodCase struct {
 func retryMethodCases() []retryMethodCase {
 	return []retryMethodCase{
 		{name: "Get", call: func(ctx context.Context, c *Client) error { return c.Get(ctx, "/test", nil) }},
-		{name: "GetRaw", call: func(ctx context.Context, c *Client) error { _, err := c.GetRaw(ctx, "/test"); return err }},
 		{name: "GetRawURL", call: func(ctx context.Context, c *Client) error {
 			_, err := c.GetRawURL(ctx, "https://example.test/test")
 			return err
@@ -635,5 +633,167 @@ func TestNewClient(t *testing.T) {
 	}
 	if c.delay != DefaultDelay {
 		t.Errorf("delay = %v, want %v", c.delay, DefaultDelay)
+	}
+}
+
+func TestAdaptiveDelayDecaysToConfiguredMinimum(t *testing.T) {
+	c := &Client{}
+	c.SetDelay(3 * time.Second)
+
+	c.onRateLimited()
+	if c.delay <= 3*time.Second {
+		t.Fatalf("delay after 429 = %v, want above configured 3s", c.delay)
+	}
+	for range 10 * adaptiveDecayRequests {
+		c.onSuccess()
+	}
+	if c.delay != 3*time.Second {
+		t.Errorf("delay after sustained success = %v, want configured 3s (not DefaultDelay)", c.delay)
+	}
+}
+
+func TestAdaptiveDelayZeroMinimumStillBacksOff(t *testing.T) {
+	c := &Client{}
+	c.SetDelay(0)
+
+	c.onRateLimited()
+	if c.delay != DefaultDelay {
+		t.Fatalf("delay after first 429 with --delay 0 = %v, want %v", c.delay, DefaultDelay)
+	}
+	for range 10 * adaptiveDecayRequests {
+		c.onSuccess()
+	}
+	if c.delay != 0 {
+		t.Errorf("delay after sustained success = %v, want 0", c.delay)
+	}
+}
+
+func TestAdaptiveDelayCeilingRespectsHighMinimum(t *testing.T) {
+	c := &Client{}
+	c.SetDelay(2 * maxDelay)
+
+	c.onRateLimited()
+	if c.delay != 2*maxDelay {
+		t.Errorf("delay after 429 = %v, want configured %v (never below the minimum)", c.delay, 2*maxDelay)
+	}
+}
+
+func TestNetworkRetryExhaustionWrapsCause(t *testing.T) {
+	wantErr := errors.New("network unavailable")
+	for _, method := range retryMethodCases() {
+		t.Run(method.name, func(t *testing.T) {
+			c := &Client{
+				http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return nil, wantErr
+				})},
+				baseURL:   "https://example.test",
+				retryWait: func(context.Context, time.Duration) error { return nil },
+			}
+			if err := method.call(context.Background(), c); !errors.Is(err, wantErr) {
+				t.Fatalf("error = %v, want it to wrap %v", err, wantErr)
+			}
+		})
+	}
+}
+
+func TestHTTPRetryExhaustionReportsLastStatus(t *testing.T) {
+	c := &Client{
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})},
+		baseURL:   "https://example.test",
+		retryWait: func(context.Context, time.Duration) error { return nil },
+	}
+	err := c.Get(context.Background(), "/test", nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("error = %v, want last status HTTP 503", err)
+	}
+}
+
+func TestDecodeJSONEnforcesCap(t *testing.T) {
+	var dest map[string]string
+	err := decodeJSON("/test", strings.NewReader(`{"k":"`+strings.Repeat("x", 64)+`"}`), &dest, 16)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 16 byte cap") {
+		t.Fatalf("error = %v, want byte cap error", err)
+	}
+	if err := decodeJSON("/test", strings.NewReader(`{"k":"v"}`), &dest, 16); err != nil {
+		t.Fatalf("decode within cap: %v", err)
+	}
+}
+
+func TestAPIErrorBodyIsBounded(t *testing.T) {
+	c := &Client{
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(strings.Repeat("e", 10*maxErrorBody))), Header: make(http.Header)}, nil
+		})},
+		baseURL: "https://example.test",
+	}
+	err := c.Get(context.Background(), "/test", nil)
+	if err == nil {
+		t.Fatal("Get accepted HTTP 400")
+	}
+	if n := strings.Count(err.Error(), "e"); n > maxErrorBody+64 {
+		t.Errorf("error message carries %d bytes of body, want at most ~%d", n, maxErrorBody)
+	}
+}
+
+func TestGetRawURLErrorsDoNotLeakSignedQueryOrBody(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, "<Error>AccessDenied body-marker</Error>")
+	}))
+	defer srv.Close()
+
+	c := &Client{http: srv.Client(), baseURL: "https://www.perplexity.ai"}
+	_, err := c.GetRawURL(context.Background(), srv.URL+"/skill.md?X-Amz-Signature=sig-marker")
+	if err == nil {
+		t.Fatal("GetRawURL accepted HTTP 403")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "sig-marker") || strings.Contains(msg, "body-marker") {
+		t.Errorf("GetRawURL error leaks query or body: %q", msg)
+	}
+	if !strings.Contains(msg, "HTTP 403") {
+		t.Errorf("GetRawURL error = %q, want status", msg)
+	}
+}
+
+func TestNewClientConfiguresRedirectPolicy(t *testing.T) {
+	c, err := New(&models.SavedSession{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.http.CheckRedirect == nil {
+		t.Error("New client has no CheckRedirect policy")
+	}
+	if _, ok := c.http.Transport.(*chromeTransport); !ok {
+		t.Errorf("New client transport = %T, want *chromeTransport", c.http.Transport)
+	}
+	if c.minDelay != DefaultDelay {
+		t.Errorf("minDelay = %v, want %v", c.minDelay, DefaultDelay)
+	}
+}
+
+func TestDecodeJSONNilDestinationReportsBodyErrors(t *testing.T) {
+	if err := decodeJSON("/test", strings.NewReader(strings.Repeat("x", 17)), nil, 16); err == nil || !strings.Contains(err.Error(), "byte cap") {
+		t.Fatalf("overflow error = %v, want byte cap error", err)
+	}
+	readErr := errors.New("stream reset")
+	if err := decodeJSON("/test", io.MultiReader(strings.NewReader("{"), &failingReader{err: readErr}), nil, 16); !errors.Is(err, readErr) {
+		t.Fatalf("read error = %v, want %v", err, readErr)
+	}
+}
+
+type failingReader struct{ err error }
+
+func (r *failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestAdaptiveDelaySmallMinimumDoubles(t *testing.T) {
+	c := &Client{}
+	c.SetDelay(100 * time.Millisecond)
+
+	c.onRateLimited()
+	if c.delay != 200*time.Millisecond {
+		t.Errorf("delay after 429 = %v, want 200ms (doubled, not jumped to DefaultDelay)", c.delay)
 	}
 }
