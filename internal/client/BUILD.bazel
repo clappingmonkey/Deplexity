@@ -12,13 +12,18 @@ go_library(
     deps = [
         "//internal/models",
         "@com_github_refraction_networking_utls//:utls",
-        "@org_golang_x_net//http2",
     ],
 )
 
 go_test(
     name = "client_test",
-    srcs = ["client_test.go"],
+    srcs = [
+        "client_test.go",
+        "transport_test.go",
+    ],
     embed = [":client"],
-    deps = ["//internal/models"],
+    deps = [
+        "//internal/models",
+        "@com_github_refraction_networking_utls//:utls",
+    ],
 )

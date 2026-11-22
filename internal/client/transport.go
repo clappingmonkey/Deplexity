@@ -3,88 +3,135 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"sync"
+	"time"
 
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 )
+
+// errInsecureScheme marks a request refused because it was not https. It is
+// never retried.
+var errInsecureScheme = errors.New("refusing non-https request")
+
+// tlsHandshakeTimeout bounds the utls handshake on a freshly dialed conn.
+// Tests shorten it.
+var tlsHandshakeTimeout = 15 * time.Second
 
 // chromeTransport is an http.RoundTripper that uses utls to impersonate
 // Chrome's TLS fingerprint (JA3/JA4), bypassing Cloudflare's fingerprint-based
-// challenges.
+// challenges. Connections are pooled by a single long-lived http.Transport,
+// which negotiates HTTP/2 or HTTP/1.1 from the utls ALPN result.
 type chromeTransport struct {
-	mu        sync.Mutex
-	h2Transport *http2.Transport
+	base *http.Transport
 }
 
-// newChromeTransport creates a transport that impersonates Chrome's TLS handshake.
+// newChromeTransport creates a transport that impersonates Chrome's TLS
+// handshake and verifies certificates against the system roots.
 func newChromeTransport() *chromeTransport {
-	return &chromeTransport{}
+	return newChromeTransportWithConfig(nil)
 }
 
+// newChromeTransportWithConfig is newChromeTransport with an optional utls
+// config template (tests use it to trust a local test CA).
+func newChromeTransportWithConfig(tmpl *utls.Config) *chromeTransport {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+
+	return &chromeTransport{base: &http.Transport{
+		// Proxies are deliberately unsupported: net/http performs the TLS
+		// handshake itself for proxied requests, which would bypass utls and
+		// lose the Chrome fingerprint.
+		Proxy: nil,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialChromeTLS(ctx, dialer, tmpl, network, addr)
+		},
+		Protocols:             &protocols,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 30 * time.Second,
+			PingTimeout:     15 * time.Second,
+		},
+	}}
+}
+
+// RoundTrip refuses anything but https so requests never fall back to a
+// plaintext or non-fingerprinted transport.
 func (t *chromeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// For non-HTTPS, fall back to default transport.
 	if req.URL.Scheme != "https" {
-		return http.DefaultTransport.RoundTrip(req)
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, fmt.Errorf("%w to %s://%s", errInsecureScheme, req.URL.Scheme, req.URL.Host)
+	}
+	return t.base.RoundTrip(req)
+}
+
+// CloseIdleConnections closes pooled connections that are not in use.
+func (t *chromeTransport) CloseIdleConnections() {
+	t.base.CloseIdleConnections()
+}
+
+func dialChromeTLS(ctx context.Context, dialer *net.Dialer, tmpl *utls.Config, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", addr, err)
 	}
 
-	host := req.URL.Hostname()
-	port := req.URL.Port()
-	if port == "" {
-		port = "443"
-	}
-	addr := net.JoinHostPort(host, port)
-
-	// Dial TCP connection.
-	dialer := &net.Dialer{}
-	tcpConn, err := dialer.DialContext(req.Context(), "tcp", addr)
+	rawConn, err := dialer.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 
-	// Wrap with utls using Chrome fingerprint.
-	config := &utls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
+	var cfg *utls.Config
+	if tmpl != nil {
+		cfg = tmpl.Clone()
+	} else {
+		cfg = &utls.Config{}
 	}
-	uConn := utls.UClient(tcpConn, config, utls.HelloChrome_Auto)
+	cfg.ServerName = host
 
-	if err := uConn.HandshakeContext(req.Context()); err != nil {
-		tcpConn.Close()
+	// net/http detaches dials from request cancellation and the dialer timeout
+	// only covers TCP, so the handshake needs its own deadline.
+	hsCtx, cancel := context.WithTimeout(ctx, tlsHandshakeTimeout)
+	defer cancel()
+
+	uConn := utls.UClient(rawConn, cfg, utls.HelloChrome_Auto)
+	if err := uConn.HandshakeContext(hsCtx); err != nil {
+		_ = rawConn.Close()
 		return nil, fmt.Errorf("utls handshake with %s: %w", host, err)
 	}
-
-	// Use HTTP/2 if negotiated, otherwise HTTP/1.1.
-	alpn := uConn.ConnectionState().NegotiatedProtocol
-	if alpn == "h2" {
-		return t.roundTripH2(req, uConn)
-	}
-	return t.roundTripH1(req, uConn)
+	return &utlsConn{UConn: uConn}, nil
 }
 
-func (t *chromeTransport) roundTripH1(req *http.Request, conn net.Conn) (*http.Response, error) {
-	// Create a one-shot HTTP/1.1 transport with the pre-established TLS conn.
-	transport := &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return conn, nil
-		},
-		// Disable TLS since we already did it.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	defer transport.CloseIdleConnections()
-	return transport.RoundTrip(req)
+// utlsConn exposes the utls connection state as a crypto/tls
+// ConnectionState, which net/http uses to select HTTP/2 via ALPN.
+type utlsConn struct {
+	*utls.UConn
 }
 
-func (t *chromeTransport) roundTripH2(req *http.Request, conn net.Conn) (*http.Response, error) {
-	// Use HTTP/2 transport over the established TLS connection.
-	h2Transport := &http2.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return conn, nil
-		},
+func (c *utlsConn) ConnectionState() tls.ConnectionState {
+	s := c.UConn.ConnectionState()
+	return tls.ConnectionState{
+		Version:                     s.Version,
+		HandshakeComplete:           s.HandshakeComplete,
+		DidResume:                   s.DidResume,
+		CipherSuite:                 s.CipherSuite,
+		NegotiatedProtocol:          s.NegotiatedProtocol,
+		NegotiatedProtocolIsMutual:  s.NegotiatedProtocolIsMutual,
+		ServerName:                  s.ServerName,
+		PeerCertificates:            s.PeerCertificates,
+		VerifiedChains:              s.VerifiedChains,
+		SignedCertificateTimestamps: s.SignedCertificateTimestamps,
+		OCSPResponse:                s.OCSPResponse,
+		ECHAccepted:                 s.ECHAccepted,
 	}
-	defer h2Transport.CloseIdleConnections()
-	return h2Transport.RoundTrip(req)
 }

@@ -1,6 +1,6 @@
 module github.com/clappingmonkey/deplexity
 
-go 1.26.3
+go 1.27.4
 
 require (
 	github.com/alecthomas/kong v1.17.0
@@ -8,7 +8,6 @@ require (
 	github.com/gpdf-dev/gpdf v1.0.18
 	github.com/refraction-networking/utls v1.8.2
 	github.com/schollz/progressbar/v3 v3.19.1
-	golang.org/x/net v0.63.0
 )
 
 require (
@@ -24,5 +23,4 @@ require (
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/term v0.48.0 // indirect
-	golang.org/x/text v0.44.0 // indirect
 )

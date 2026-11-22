@@ -130,6 +130,7 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer c.Close()
 	c.SetDelay(delay)
 	c.SetVerbose(cmd.verbose)
 
