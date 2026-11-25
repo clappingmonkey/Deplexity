@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/go-rod/rod v0.116.2
-	github.com/gpdf-dev/gpdf v1.0.18
+	github.com/gpdf-dev/gpdf v1.0.19
 	github.com/refraction-networking/utls v1.8.2
 	github.com/schollz/progressbar/v3 v3.19.1
 )
