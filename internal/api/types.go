@@ -12,23 +12,23 @@ type ThreadListResponse []ThreadListItem
 
 // ThreadListItem is a thread summary in the list_ask_threads response.
 type ThreadListItem struct {
-	UUID             string              `json:"uuid"`
-	Title            string              `json:"title"`
-	Slug             string              `json:"slug"`
-	ThreadNumber     int                 `json:"thread_number"`
-	Mode             string              `json:"mode"`
-	Status           string              `json:"status"`
-	ContextUUID      string              `json:"context_uuid"`
-	DisplayModel     string              `json:"display_model"`
-	SearchFocus      string              `json:"search_focus"`
-	QueryStr         string              `json:"query_str"`
-	AnswerPreview    string              `json:"answer_preview"`
-	LastQueryTime    string              `json:"last_query_datetime"`
-	HasNextPage      bool                `json:"has_next_page"`
-	TotalThreads     int                 `json:"total_threads"`
-	Collection       *ThreadCollection   `json:"collection,omitempty"`
-	Source           string              `json:"source"`
-	QueryCount       int                 `json:"query_count"`
+	UUID          string            `json:"uuid"`
+	Title         string            `json:"title"`
+	Slug          string            `json:"slug"`
+	ThreadNumber  int               `json:"thread_number"`
+	Mode          string            `json:"mode"`
+	Status        string            `json:"status"`
+	ContextUUID   string            `json:"context_uuid"`
+	DisplayModel  string            `json:"display_model"`
+	SearchFocus   string            `json:"search_focus"`
+	QueryStr      string            `json:"query_str"`
+	AnswerPreview string            `json:"answer_preview"`
+	LastQueryTime string            `json:"last_query_datetime"`
+	HasNextPage   bool              `json:"has_next_page"`
+	TotalThreads  int               `json:"total_threads"`
+	Collection    *ThreadCollection `json:"collection,omitempty"`
+	Source        string            `json:"source"`
+	QueryCount    int               `json:"query_count"`
 }
 
 // ThreadCollection is the inline collection/space info returned with each thread.
@@ -161,12 +161,12 @@ type SkillDetailInner struct {
 
 // ThreadDetailResponse is the shape of GET /rest/thread/{uuid}.
 type ThreadDetailResponse struct {
-	Entries          []ThreadEntry   `json:"entries"`
+	Entries           []ThreadEntry  `json:"entries"`
 	BackgroundEntries []interface{}  `json:"background_entries"`
-	HasNextPage      bool            `json:"has_next_page"`
-	NextCursor       *string         `json:"next_cursor"`
-	Status           string          `json:"status"`
-	ThreadMetadata   ThreadMetadata  `json:"thread_metadata"`
+	HasNextPage       bool           `json:"has_next_page"`
+	NextCursor        *string        `json:"next_cursor"`
+	Status            string         `json:"status"`
+	ThreadMetadata    ThreadMetadata `json:"thread_metadata"`
 }
 
 // ThreadMetadata contains thread-level metadata.
@@ -180,31 +180,31 @@ type ThreadMetadata struct {
 
 // ThreadEntry represents a single Q&A entry within a thread.
 type ThreadEntry struct {
-	UUID            string  `json:"uuid"`
-	BackendUUID     string  `json:"backend_uuid"`
-	ContextUUID     string  `json:"context_uuid"`
-	QueryStr        string  `json:"query_str"`
-	DisplayModel    string  `json:"display_model"`
-	SearchFocus     string  `json:"search_focus"`
-	Status          string  `json:"status"`
-	Mode            string  `json:"mode"`
-	Personalized    bool    `json:"personalized"`
-	ThreadTitle     string  `json:"thread_title"`
-	ThreadURLSlug   string  `json:"thread_url_slug"`
-	BookmarkState   string  `json:"bookmark_state"`
-	Blocks          []Block `json:"blocks"`
-	RelatedQueries  []string `json:"related_queries"`
-	CreatedAt       string  `json:"entry_created_datetime"`
-	UpdatedAt       string  `json:"entry_updated_datetime"`
+	UUID           string   `json:"uuid"`
+	BackendUUID    string   `json:"backend_uuid"`
+	ContextUUID    string   `json:"context_uuid"`
+	QueryStr       string   `json:"query_str"`
+	DisplayModel   string   `json:"display_model"`
+	SearchFocus    string   `json:"search_focus"`
+	Status         string   `json:"status"`
+	Mode           string   `json:"mode"`
+	Personalized   bool     `json:"personalized"`
+	ThreadTitle    string   `json:"thread_title"`
+	ThreadURLSlug  string   `json:"thread_url_slug"`
+	BookmarkState  string   `json:"bookmark_state"`
+	Blocks         []Block  `json:"blocks"`
+	RelatedQueries []string `json:"related_queries"`
+	CreatedAt      string   `json:"entry_created_datetime"`
+	UpdatedAt      string   `json:"entry_updated_datetime"`
 }
 
 // Block represents a content block within an entry.
 type Block struct {
-	IntendedUsage    string            `json:"intended_usage"`
-	MarkdownBlock    *MarkdownBlock    `json:"markdown_block,omitempty"`
-	WebResultBlock   *WebResultBlock   `json:"web_result_block,omitempty"`
-	PlanBlock        *PlanBlock        `json:"plan_block,omitempty"`
-	WorkflowBlock    *WorkflowBlock    `json:"workflow_block,omitempty"`
+	IntendedUsage  string          `json:"intended_usage"`
+	MarkdownBlock  *MarkdownBlock  `json:"markdown_block,omitempty"`
+	WebResultBlock *WebResultBlock `json:"web_result_block,omitempty"`
+	PlanBlock      *PlanBlock      `json:"plan_block,omitempty"`
+	WorkflowBlock  *WorkflowBlock  `json:"workflow_block,omitempty"`
 }
 
 // MarkdownBlock contains the answer text in markdown format.
@@ -231,12 +231,12 @@ type WebResult struct {
 
 // WebResultMeta contains metadata for a web result.
 type WebResultMeta struct {
-	Client           string   `json:"client"`
-	CitationDomain   *string  `json:"citation_domain_name"`
-	DomainName       string   `json:"domain_name,omitempty"`
-	Description      string   `json:"description,omitempty"`
-	PublishedDate    string   `json:"published_date,omitempty"`
-	Images           []string `json:"images,omitempty"`
+	Client         string   `json:"client"`
+	CitationDomain *string  `json:"citation_domain_name"`
+	DomainName     string   `json:"domain_name,omitempty"`
+	Description    string   `json:"description,omitempty"`
+	PublishedDate  string   `json:"published_date,omitempty"`
+	Images         []string `json:"images,omitempty"`
 }
 
 // PlanBlock contains the search plan/steps.
@@ -291,9 +291,9 @@ type UserResponse struct {
 
 // SessionResponse is the shape of GET /api/auth/session.
 type SessionResponse struct {
-	Expires                 string       `json:"expires"`
-	PreventUsernameRedirect bool         `json:"preventUsernameRedirect"`
-	User                    SessionUser  `json:"user"`
+	Expires                 string      `json:"expires"`
+	PreventUsernameRedirect bool        `json:"preventUsernameRedirect"`
+	User                    SessionUser `json:"user"`
 }
 
 // SessionUser is the user info within the session response.

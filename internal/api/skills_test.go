@@ -66,7 +66,7 @@ func TestListGlobalSkillsFiltersGlobalScopeAndFetchesBody(t *testing.T) {
 		},
 	}
 
-	skills, err := ListGlobalSkills(context.Background(), m)
+	skills, err := ListGlobalSkills(context.Background(), m, nil)
 	if err != nil {
 		t.Fatalf("ListGlobalSkills: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestListGlobalSkillsFailSoftOnBodyDownload(t *testing.T) {
 		rawErrs:   map[string]error{"https://s3.example.com/broken/SKILL.md": errors.New("403 expired")},
 	}
 
-	skills, err := ListGlobalSkills(context.Background(), m)
+	skills, err := ListGlobalSkills(context.Background(), m, nil)
 	if err != nil {
 		t.Fatalf("ListGlobalSkills should be fail-soft on body error, got: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestListGlobalSkillsFailSoftOnDetailError(t *testing.T) {
 		getErrs:   map[string]error{"skills/g1": errors.New("500 server error")},
 	}
 
-	skills, err := ListGlobalSkills(context.Background(), m)
+	skills, err := ListGlobalSkills(context.Background(), m, nil)
 	if err != nil {
 		t.Fatalf("ListGlobalSkills should be fail-soft on detail error, got: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestListGlobalSkillsPropagatesCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ListGlobalSkills(ctx, m); !errors.Is(err, context.Canceled) {
+	if _, err := ListGlobalSkills(ctx, m, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
 }
@@ -156,7 +156,7 @@ func TestGetAccountWrapsGlobalSkills(t *testing.T) {
 		responses: map[string]string{"selectable": selectable, "skills/g1": detail},
 	}
 
-	account, err := GetAccount(context.Background(), m)
+	account, err := GetAccount(context.Background(), m, nil)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestListGlobalSkillsDeduplicatesAcrossPages(t *testing.T) {
 		},
 	}}
 
-	skills, err := ListGlobalSkills(context.Background(), p)
+	skills, err := ListGlobalSkills(context.Background(), p, nil)
 	if err != nil {
 		t.Fatalf("ListGlobalSkills: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestListGlobalSkillsPropagatesCancellationFromList(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ListGlobalSkills(ctx, m); !errors.Is(err, context.Canceled) {
+	if _, err := ListGlobalSkills(ctx, m, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
 }
@@ -220,7 +220,7 @@ func TestGetAccountEmptyWhenNoGlobalSkills(t *testing.T) {
 		"selectable": `{"skills":[],"next_cursor":null}`,
 	}}
 
-	account, err := GetAccount(context.Background(), m)
+	account, err := GetAccount(context.Background(), m, nil)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}

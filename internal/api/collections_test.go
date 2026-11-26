@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
@@ -148,7 +150,7 @@ func TestEnrichSpaceSkillsFiltersCollectionScopeAndFetchesBody(t *testing.T) {
 	}
 
 	space := &models.Space{UUID: "u1", Name: "Recipes"}
-	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+	if err := enrichSpaceSkills(context.Background(), m, space, nil); err != nil {
 		t.Fatalf("enrichSpaceSkills: %v", err)
 	}
 
@@ -190,7 +192,7 @@ func TestEnrichSpaceSkillsFailSoftOnBodyDownload(t *testing.T) {
 	}
 
 	space := &models.Space{UUID: "u1", Name: "Recipes"}
-	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+	if err := enrichSpaceSkills(context.Background(), m, space, nil); err != nil {
 		t.Fatalf("enrichSpaceSkills should be fail-soft on body error, got: %v", err)
 	}
 	// The skill is still exported as metadata, just without a body.
@@ -214,7 +216,7 @@ func TestEnrichSpaceSkillsFailSoftOnDetailError(t *testing.T) {
 	}
 
 	space := &models.Space{UUID: "u1", Name: "Recipes"}
-	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+	if err := enrichSpaceSkills(context.Background(), m, space, nil); err != nil {
 		t.Fatalf("enrichSpaceSkills should be fail-soft on detail error, got: %v", err)
 	}
 	if len(space.Skills) != 1 {
@@ -291,21 +293,57 @@ func TestListSpaceSkillsFollowsPagination(t *testing.T) {
 	}
 }
 
-func TestListSpaceSkillsStopsOnRepeatedCursor(t *testing.T) {
+func TestListSpaceSkillsFailsOnRepeatedCursor(t *testing.T) {
 	// A misbehaving API that keeps returning the same cursor must not loop
-	// forever.
+	// forever, and the pages read so far must not pass for a complete list.
 	p := &pagingGetter{pages: map[string]string{
 		"":     `{"skills":[{"id":"s1","name":"one","scope":"collection"}],"next_cursor":"LOOP"}`,
 		"LOOP": `{"skills":[{"id":"s2","name":"two","scope":"collection"}],"next_cursor":"LOOP"}`,
 	}}
 
 	skills, err := ListSpaceSkills(context.Background(), p, "collection-uuid")
-	if err != nil {
-		t.Fatalf("ListSpaceSkills: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "cursor repeated") {
+		t.Fatalf("err = %v, want repeated-cursor error", err)
 	}
-	// First page + one LOOP page, then the repeated cursor stops iteration.
-	if len(skills) != 2 {
-		t.Fatalf("got %d skills, want 2 before loop guard trips", len(skills))
+	if skills != nil {
+		t.Errorf("skills = %v, want nil", skills)
+	}
+	if len(p.paths) != 2 {
+		t.Errorf("made %d requests, want 2", len(p.paths))
+	}
+}
+
+func TestEnrichSpaceSkillsDeduplicatesAndRecordsIssues(t *testing.T) {
+	// s1 repeats on the second page; its detail fails, which is recorded,
+	// not fatal, and recorded only once.
+	p := &pagingGetter{pages: map[string]string{
+		"":   `{"skills":[{"id":"s1","name":"one","scope":"collection"}],"next_cursor":"P2"}`,
+		"P2": `{"skills":[{"id":"s1","name":"one","scope":"collection"}]}`,
+	}}
+	m := pagingEnricher{p}
+	space := &models.Space{UUID: "u1", Name: "Space"}
+	issues := &Issues{}
+	if err := enrichSpaceSkills(context.Background(), m, space, issues); err != nil {
+		t.Fatalf("enrichSpaceSkills: %v", err)
+	}
+	if len(space.Skills) != 1 {
+		t.Fatalf("got %d skills, want 1", len(space.Skills))
+	}
+	got := issues.List()
+	if len(got) != 1 || got[0].Section != models.SectionSkillDetail {
+		t.Fatalf("issues = %+v, want one skill_detail failure", got)
+	}
+}
+
+func TestEnrichSpacesAbortsOnRejectedSession(t *testing.T) {
+	m := &mockEnricher{getErrs: map[string]error{"get_collection": fmt.Errorf("wrapped: %w", client.ErrNotAuthenticated)}}
+	items := []SpaceItem{{UUID: "u1", Title: "A", Slug: "a"}}
+	issues := &Issues{}
+	if _, err := enrichSpaces(context.Background(), m, items, issues); !errors.Is(err, client.ErrNotAuthenticated) {
+		t.Fatalf("err = %v, want ErrNotAuthenticated", err)
+	}
+	if len(issues.List()) != 0 {
+		t.Errorf("issues = %+v, want none", issues.List())
 	}
 }
 
@@ -321,7 +359,7 @@ func TestEnrichSpaceSkillsPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	space := &models.Space{UUID: "u1", Name: "Recipes"}
-	err := enrichSpaceSkills(ctx, m, space)
+	err := enrichSpaceSkills(ctx, m, space, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
@@ -343,7 +381,7 @@ func TestEnrichSpaceSkillsSkipsEmptyUUID(t *testing.T) {
 	m := &mockEnricher{}                                     // no canned responses: any Get would error
 	space := &models.Space{Slug: "recipes", Name: "Recipes"} // UUID == ""
 
-	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+	if err := enrichSpaceSkills(context.Background(), m, space, nil); err != nil {
 		t.Fatalf("enrichSpaceSkills with empty uuid = %v, want nil (skip)", err)
 	}
 	if len(m.paths) != 0 {
@@ -369,7 +407,7 @@ func TestEnrichSpaceSkillsEmptyFileURLSkipsBodyFetch(t *testing.T) {
 	}
 
 	space := &models.Space{UUID: "u1", Name: "Recipes"}
-	if err := enrichSpaceSkills(context.Background(), m, space); err != nil {
+	if err := enrichSpaceSkills(context.Background(), m, space, nil); err != nil {
 		t.Fatalf("enrichSpaceSkills: %v", err)
 	}
 	if len(space.Skills) != 1 {
@@ -404,7 +442,7 @@ func TestEnrichSpacesFailSoftAcrossSpaces(t *testing.T) {
 		{UUID: "u2", Title: "Good", Slug: "good-slug"},
 	}
 
-	spaces, err := enrichSpaces(context.Background(), m, items)
+	spaces, err := enrichSpaces(context.Background(), m, items, nil)
 	if err != nil {
 		t.Fatalf("enrichSpaces should be fail-soft, got: %v", err)
 	}
@@ -433,7 +471,7 @@ func TestEnrichSpacesDeduplicatesNonEmptyUUIDs(t *testing.T) {
 		{Title: "No ID Two"},
 	}
 
-	spaces, err := enrichSpaces(context.Background(), m, items)
+	spaces, err := enrichSpaces(context.Background(), m, items, nil)
 	if err != nil {
 		t.Fatalf("enrichSpaces: %v", err)
 	}
@@ -454,7 +492,7 @@ func TestEnrichSpacesPropagatesCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := enrichSpaces(ctx, m, items); !errors.Is(err, context.Canceled) {
+	if _, err := enrichSpaces(ctx, m, items, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
 }

@@ -29,11 +29,17 @@ type Thread struct {
 	// NextCursor is the pagination cursor to resume from when Complete is
 	// false. The entries already fetched are persisted alongside it.
 	NextCursor string `json:"next_cursor,omitempty"`
+	// ListedUpdatedAt is the listing timestamp the fetch that wrote this
+	// file started from. A checkpoint is only resumed for the same listing.
+	ListedUpdatedAt time.Time `json:"listed_updated_at,omitzero"`
 }
 
 // Entry represents a single query-response pair within a thread.
 type Entry struct {
-	UUID        string    `json:"uuid"`
+	UUID string `json:"uuid"`
+	// Key identifies an entry the API gave no UUID, so page-boundary
+	// duplicates can be dropped (also after resuming from a checkpoint).
+	Key         string    `json:"key,omitempty"`
 	Query       string    `json:"query"`
 	Answer      string    `json:"answer"`
 	Sources     []Source  `json:"sources,omitempty"`
@@ -129,8 +135,31 @@ type ExportManifest struct {
 	ThreadsComplete bool                  `json:"threads_complete"`
 	ExpectedThreads int                   `json:"expected_threads"`
 	FailedThreads   []ThreadExportFailure `json:"failed_threads,omitempty"`
-	ThreadIndex     map[string]string     `json:"thread_index,omitempty"` // uuid -> slug
+	// SectionsComplete is false when spaces, space details, skills or global
+	// skills could only be exported in part; FailedSections lists what failed.
+	SectionsComplete bool              `json:"sections_complete"`
+	FailedSections   []SectionFailure  `json:"failed_sections,omitempty"`
+	ThreadIndex      map[string]string `json:"thread_index,omitempty"` // uuid -> slug
 }
+
+// SectionFailure identifies a non-thread part of the export that failed. The
+// rest of the export is still written.
+type SectionFailure struct {
+	Section string `json:"section"`
+	Item    string `json:"item,omitempty"`
+	Error   string `json:"error"`
+}
+
+const (
+	SectionSpaces       = "spaces"
+	SectionSpaceDetail  = "space_detail"
+	SectionSpaceSkills  = "space_skills"
+	SectionSkillDetail  = "skill_detail"
+	SectionSkillBody    = "skill_body"
+	SectionGlobalSkills = "global_skills"
+	// SectionFormat is an output format (json, markdown, pdf) that failed.
+	SectionFormat = "format"
+)
 
 // ThreadExportFailure identifies a thread that could not be exported during a run.
 type ThreadExportFailure struct {
@@ -157,20 +186,39 @@ type ExportCounts struct {
 
 // ThreadIndex holds the cached list of thread UUIDs for resumable export.
 type ThreadIndex struct {
+	// Version is ThreadIndexVersion for indexes that record per-thread
+	// fetch watermarks; older indexes have none.
+	Version   int         `json:"version,omitempty"`
 	Threads   []ThreadRef `json:"threads"`
 	Total     int         `json:"total"`
 	FetchedAt time.Time   `json:"fetched_at"`
 	Complete  bool        `json:"complete"` // false if listing was interrupted
 }
 
+// ThreadIndexVersion is the version of thread_index.json this build writes.
+// Version 1 added fetched_updated_at and cache_slug.
+const ThreadIndexVersion = 1
+
 // ThreadRef is a lightweight reference to a thread from the list endpoint.
 type ThreadRef struct {
-	UUID              string    `json:"uuid"`
-	Slug              string    `json:"slug,omitempty"`
-	Title             string    `json:"title"`
-	SpaceUUID         string    `json:"space_uuid,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	RetryRequired     bool      `json:"retry_required,omitempty"`
+	UUID          string    `json:"uuid"`
+	Slug          string    `json:"slug,omitempty"`
+	Title         string    `json:"title"`
+	SpaceUUID     string    `json:"space_uuid,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	RetryRequired bool      `json:"retry_required,omitempty"`
+	// FetchedUpdatedAt is the list UpdatedAt the cached detail was fetched
+	// at. --refresh re-fetches a thread whose UpdatedAt is newer. It is kept
+	// separately from UpdatedAt because a listing can be saved without the
+	// detail being fetched again (an interrupted or non-refresh run).
+	FetchedUpdatedAt time.Time `json:"fetched_updated_at,omitzero"`
+	// SpaceKnown marks SpaceUUID as coming from a listing that reports space
+	// membership, so an empty SpaceUUID means "in no space". Refs from older
+	// indexes do not have it, and their empty SpaceUUID means "unknown".
+	SpaceKnown bool `json:"space_known,omitempty"`
+	// CacheSlug is the slug the cached detail was written under. It is kept
+	// across interrupted runs so a checkpoint is still found after a rename.
+	CacheSlug         string    `json:"cache_slug,omitempty"`
 	PreviousUpdatedAt time.Time `json:"-"`
 	PreviousSlug      string    `json:"-"`
 }

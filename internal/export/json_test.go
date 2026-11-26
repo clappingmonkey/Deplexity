@@ -3,6 +3,8 @@ package export
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -634,5 +636,114 @@ func TestExportAccountNilIsNoop(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "account")); !os.IsNotExist(err) {
 		t.Errorf("nil account created an account dir (err=%v)", err)
+	}
+}
+
+func TestWriteBytesReplacesSymlinkInsteadOfFollowing(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "skill.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := writeBytes(link, []byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(outside); string(data) != "keep" {
+		t.Errorf("symlink target was overwritten: %q", data)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		t.Errorf("skill.md = %v, %v; want a regular 0600 file", info, err)
+	}
+}
+
+func TestLoadThreadIndexMigratesIndexWithoutVersion(t *testing.T) {
+	dir := t.TempDir()
+	listed := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	data := `{"threads":[{"uuid":"a","slug":"a-slug","updated_at":"2026-08-01T12:00:00Z"}],"total":1,"complete":true}`
+	if err := os.WriteFile(filepath.Join(dir, "thread_index.json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	exporter := &JSONExporter{OutputDir: dir}
+	index, err := exporter.LoadThreadIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := index.Threads[0]
+	// The old listing time may be newer than the detail on disk, so the
+	// watermark stays unknown and the next --refresh fetches the thread.
+	if index.Version != models.ThreadIndexVersion || !ref.FetchedUpdatedAt.IsZero() || !ref.UpdatedAt.Equal(listed) || ref.CacheSlug != "a-slug" {
+		t.Fatalf("index version %d, ref %+v: want an unknown watermark and the cache slug", index.Version, ref)
+	}
+
+	// A current index is not migrated again.
+	index.Threads[0].CacheSlug = ""
+	if err := exporter.SaveThreadIndex(index); err != nil {
+		t.Fatal(err)
+	}
+	again, err := exporter.LoadThreadIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Threads[0].CacheSlug != "" {
+		t.Fatalf("cache slug = %q, want no second migration", again.Threads[0].CacheSlug)
+	}
+}
+
+// A thread renamed back to a slug that still holds an older copy must load
+// the copy under its cache slug.
+func TestLoadThreadPrefersCacheSlug(t *testing.T) {
+	dir := t.TempDir()
+	exporter := &JSONExporter{OutputDir: dir}
+	for _, th := range []*models.Thread{
+		{UUID: "thread-1", Slug: "a", Title: "old", Complete: true},
+		{UUID: "thread-1", Slug: "b", Title: "new", Complete: true},
+	} {
+		if err := exporter.ExportThread(th); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := exporter.LoadThread(models.ThreadRef{UUID: "thread-1", Slug: "a", CacheSlug: "b", PreviousSlug: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "new" {
+		t.Fatalf("loaded %q, want the copy under the cache slug", got.Title)
+	}
+}
+
+func TestWriteFileAtomicPublishesNothingOnceCanceled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	err := writeFileAtomic(ctx, path, func(w io.Writer) error {
+		cancel() // canceled while the file is being written
+		_, err := w.Write([]byte("{}"))
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("dir has %d entries, want none (no file, no temp file)", len(entries))
+	}
+}
+
+func TestWriteBytesKeepsFilesPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.md")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBytes(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("mode = %v, %v; want 0600", info.Mode().Perm(), err)
 	}
 }

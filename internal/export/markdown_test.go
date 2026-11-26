@@ -272,3 +272,65 @@ func TestMarkdownExportAccountEmptyAndNil(t *testing.T) {
 		t.Errorf("nil account created an account dir (err=%v)", err)
 	}
 }
+
+func TestMarkdownLink(t *testing.T) {
+	tests := []struct{ text, target, want string }{
+		{"Plain", "https://example.com/a", "[Plain](https://example.com/a)"},
+		{"a [b] c", "https://example.com", `[a \[b\] c](https://example.com)`},
+		{"x](javascript:alert(1)) [y", "https://example.com", `[x\](javascript:alert(1)) \[y](https://example.com)`},
+		{"Wiki", "https://en.wikipedia.org/wiki/Go_(language)", "[Wiki](<https://en.wikipedia.org/wiki/Go_(language)>)"},
+		{"Spaced", "https://example.com/a b>c", "[Spaced](https://example.com/a%20b%3Ec)"},
+		{"Query", "https://example.com/?a=1&b=2", "[Query](https://example.com/?a=1&amp;b=2)"},
+		{"Line\nbreak", "skills/x.md", "[Line break](skills/x.md)"},
+		{"Mail", "mailto:a@example.com", "[Mail](mailto:a@example.com)"},
+		{"Caps", "HTTPS://example.com/a", "[Caps](HTTPS://example.com/a)"},
+		// Targets that are not http(s) or mailto, as Markdown would read them.
+		{"Evil", "javascript:alert(1)", "Evil"},
+		{"Upper", "JavaScript:alert(1)", "Upper"},
+		{"Data", "data:text/html,<script>", "Data"},
+		{"Tab", "java\tscript:alert(1)", "Tab"},
+		{"Space", " javascript:alert(1)", "Space"},
+		{"Empty", "", "Empty"},
+		// An entity or a backslash escape must not turn into a ':' later.
+		{"Entity", "javascript&#58;alert(1)", "[Entity](<javascript&amp;#58;alert(1)>)"},
+		{"Escape", `javascript\:alert(1)`, "Escape"},
+		{"Backslash", `https://example.com/a\b`, "[Backslash](https://example.com/a%5Cb)"},
+		// HTML and code spans in the text stay text.
+		{"<img src=x onerror=alert(1)>", "https://example.com", `[\<img src=x onerror=alert(1)\>](https://example.com)`},
+		{"a `b", "https://example.com", "[a \\`b](https://example.com)"},
+	}
+	for _, tt := range tests {
+		if got := markdownLink(tt.text, tt.target); got != tt.want {
+			t.Errorf("markdownLink(%q, %q) = %q, want %q", tt.text, tt.target, got, tt.want)
+		}
+	}
+}
+
+func TestMarkdownText(t *testing.T) {
+	got := markdownText("<b>x</b> & *y* [z](u) `c` a_b\nnext")
+	want := "\\<b\\>x\\</b\\> \\& \\*y\\* \\[z\\](u) \\`c\\` a\\_b next"
+	if got != want {
+		t.Errorf("markdownText = %q, want %q", got, want)
+	}
+}
+
+func TestMarkdownTimestampsAreUTC(t *testing.T) {
+	dir := t.TempDir()
+	exp := &MarkdownExporter{OutputDir: dir}
+	created := time.Date(2026, 3, 4, 10, 0, 0, 0, time.FixedZone("EET", 2*60*60))
+	thread := &models.Thread{UUID: "u", Slug: "s", Title: "T", CreatedAt: created, UpdatedAt: created}
+	if err := exp.ExportThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "threads", "*", "*.md"))
+	if len(matches) != 1 {
+		t.Fatalf("markdown files = %v", matches)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "2026-03-04 08:00:00 UTC") {
+		t.Errorf("markdown does not show the UTC time:\n%s", data)
+	}
+}

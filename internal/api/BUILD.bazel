@@ -4,6 +4,7 @@ go_library(
     name = "api",
     srcs = [
         "collections.go",
+        "issues.go",
         "skills.go",
         "threads.go",
         "types.go",
@@ -26,5 +27,8 @@ go_test(
         "user_test.go",
     ],
     embed = [":api"],
-    deps = ["//internal/models"],
+    deps = [
+        "//internal/client",
+        "//internal/models",
+    ],
 )

@@ -1,6 +1,7 @@
 package export
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ func TestSanitizeFilename(t *testing.T) {
 		{"UPPERCASE", "uppercase"},
 		{"", "unnamed"},
 		{"a---b---c", "a-b-c"},
+		{"Café", "caf"},
 		{string(make([]byte, 200)), "unnamed"}, // all zeros → all replaced → collapsed
 	}
 
@@ -250,5 +252,20 @@ func TestThreadDirNameUsesSlugAndFullUUIDIdentity(t *testing.T) {
 	second := threadDirName("C#", "aaaaaaaa-98fa-e548-7436-4992599ad117")
 	if first == second {
 		t.Fatalf("normalized slug and shared hash-prefix collision produced %q", first)
+	}
+}
+
+func TestSkillFilenamesAvoidWindowsDeviceNames(t *testing.T) {
+	got := skillFilenames([]models.Skill{
+		{ID: "1", Name: "NUL"},
+		{ID: "2", Name: "con.txt"},
+		{ID: "3", Name: "Com1"},
+		{ID: "4", Name: "console"},
+		{ID: "aaaaaaaa1", Name: "NUL.txt"},
+		{ID: "bbbbbbbb2", Name: "nul.txt"},
+	})
+	want := []string{"_nul.md", "_con.txt.md", "_com1.md", "console.md", "_nul.txt-aaaaaaaa.md", "_nul.txt-bbbbbbbb.md"}
+	if !slices.Equal(got, want) {
+		t.Errorf("skillFilenames = %q, want %q", got, want)
 	}
 }

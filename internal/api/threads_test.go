@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -454,5 +456,107 @@ func TestGetThreadHonorsCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestGetThreadStopsWhenNewCursorsBringNoEntries(t *testing.T) {
+	responses := make([]ThreadDetailResponse, 20)
+	for i := range responses {
+		responses[i] = ThreadDetailResponse{
+			Entries:     []ThreadEntry{{UUID: "entry-1"}},
+			HasNextPage: true,
+			NextCursor:  cursorPtr(fmt.Sprintf("cursor-%d", i)),
+		}
+	}
+	getter := &threadGetter{responses: responses}
+
+	thread, err := GetThread(context.Background(), getter, "thread-1", nil, nil)
+	if err == nil || thread != nil {
+		t.Fatalf("GetThread = %+v, %v; want a pagination error", thread, err)
+	}
+	if want := 1 + maxIdleThreadPages; getter.calls != want {
+		t.Errorf("made %d requests, want %d", getter.calls, want)
+	}
+}
+
+func TestGetThreadKeepsEntriesWithoutUUID(t *testing.T) {
+	first := ThreadEntry{QueryStr: "first question"}
+	second := ThreadEntry{QueryStr: "second question"}
+	getter := &threadGetter{responses: []ThreadDetailResponse{
+		{Entries: []ThreadEntry{first, second}, HasNextPage: true, NextCursor: cursorPtr("c1")},
+		// The boundary entry comes again on the next page.
+		{Entries: []ThreadEntry{second}},
+	}}
+
+	thread, err := GetThread(context.Background(), getter, "thread-1", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(thread.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2 distinct entries without UUIDs", len(thread.Entries))
+	}
+}
+
+func TestGetThreadResumeDeduplicatesEntriesWithoutUUID(t *testing.T) {
+	first := ThreadEntry{QueryStr: "first question", CreatedAt: "2026-03-04T10:00:00+02:00"}
+	second := ThreadEntry{QueryStr: "second question", CreatedAt: "2026-03-04T11:00:00Z"}
+	third := ThreadEntry{QueryStr: "third question"}
+
+	// The checkpoint goes through JSON like the one on disk.
+	data, err := json.Marshal(&models.Thread{UUID: "thread-1", NextCursor: "c1", Entries: []models.Entry{toEntry(first), toEntry(second)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resume models.Thread
+	if err := json.Unmarshal(data, &resume); err != nil {
+		t.Fatal(err)
+	}
+
+	getter := &threadGetter{responses: []ThreadDetailResponse{
+		{Entries: []ThreadEntry{second, third}},
+	}}
+	thread, err := GetThread(context.Background(), getter, "thread-1", &resume, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queries []string
+	for _, e := range thread.Entries {
+		queries = append(queries, e.Query)
+	}
+	if want := []string{"first question", "second question", "third question"}; !slices.Equal(queries, want) {
+		t.Fatalf("queries = %q, want %q", queries, want)
+	}
+}
+
+// Entries the export would show the same must still both be kept when the API
+// tells them apart.
+func TestGetThreadKeepsDistinctBackendEntries(t *testing.T) {
+	a := ThreadEntry{BackendUUID: "backend-a", QueryStr: "same"}
+	b := ThreadEntry{BackendUUID: "backend-b", QueryStr: "same"}
+	getter := &threadGetter{responses: []ThreadDetailResponse{{Entries: []ThreadEntry{a, b}}}}
+	thread, err := GetThread(context.Background(), getter, "thread-1", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(thread.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(thread.Entries))
+	}
+}
+
+// A checkpoint written before entries had a Key cannot be matched safely, so
+// the thread is fetched again from the start.
+func TestGetThreadRestartsLegacyCheckpointWithoutKeys(t *testing.T) {
+	second := ThreadEntry{QueryStr: "second question"}
+	third := ThreadEntry{QueryStr: "third question"}
+	legacy := toEntry(second)
+	legacy.Key = ""
+	resume := &models.Thread{UUID: "thread-1", NextCursor: "c1", Entries: []models.Entry{legacy}}
+	getter := &threadGetter{responses: []ThreadDetailResponse{{Entries: []ThreadEntry{second, third}}}}
+	thread, err := GetThread(context.Background(), getter, "thread-1", resume, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(thread.Entries) != 2 {
+		t.Fatalf("entries = %d, want only the refetched entries", len(thread.Entries))
 	}
 }

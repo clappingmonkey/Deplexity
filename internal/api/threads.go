@@ -1,7 +1,11 @@
 package api
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"time"
@@ -120,6 +124,7 @@ func threadPagePath(uuid, cursor string) string {
 func toEntry(e ThreadEntry) models.Entry {
 	entry := models.Entry{
 		UUID:        e.UUID,
+		Key:         rawEntryKeyIfNoUUID(e),
 		Query:       e.QueryStr,
 		Model:       e.DisplayModel,
 		SearchFocus: e.SearchFocus,
@@ -174,8 +179,9 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 	// seenCursors bounds the loop: the endpoint is reverse-engineered, so a
 	// misbehaving response that repeats a cursor must not spin forever.
 	seenCursors := make(map[string]bool)
+	idlePages := 0
 
-	if resume != nil && !resume.Complete && resume.NextCursor != "" {
+	if resume != nil && !resume.Complete && resume.NextCursor != "" && resumable(resume) {
 		thread.Slug = resume.Slug
 		thread.Title = resume.Title
 		thread.CreatedAt = resume.CreatedAt
@@ -184,7 +190,7 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 		thread.Bookmarked = resume.Bookmarked
 		thread.Entries = append(thread.Entries, resume.Entries...)
 		for _, e := range thread.Entries {
-			seen[e.UUID] = true
+			seen[entryKey(e)] = true
 		}
 		cursor = resume.NextCursor
 		seenCursors[cursor] = true
@@ -214,21 +220,38 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 		}
 
 		// A cursor boundary can re-include the last entry, so dedupe by UUID.
+		added := 0
 		for _, e := range page.Entries {
 			if e.BookmarkState == bookmarkStateBookmarked {
 				thread.Bookmarked = true
 			}
-			if seen[e.UUID] {
+			entry := toEntry(e)
+			key := entryKey(entry)
+			if seen[key] {
 				continue
 			}
-			seen[e.UUID] = true
-			thread.Entries = append(thread.Entries, toEntry(e))
+			seen[key] = true
+			thread.Entries = append(thread.Entries, entry)
+			added++
 		}
 
 		// The thread ends when the API reports no further page or omits the
-		// next cursor. Both are checked to guard against inconsistent responses.
+		// next cursor. A missing cursor ends it even when has_next_page is
+		// true: like the list endpoint's flag, has_next_page is not trusted,
+		// and there is no way to ask for a next page without a cursor.
 		if !page.HasNextPage || page.NextCursor == nil || *page.NextCursor == "" {
 			break
+		}
+
+		// New cursors that bring no new entries would otherwise go on
+		// forever without repeating a cursor.
+		if added == 0 {
+			idlePages++
+			if idlePages >= maxIdleThreadPages {
+				return nil, fmt.Errorf("thread %s returned %d pages in a row without new entries: possible API pagination loop", uuid, idlePages)
+			}
+		} else {
+			idlePages = 0
 		}
 
 		cursor = *page.NextCursor
@@ -254,6 +277,42 @@ func GetThread(ctx context.Context, c getter, uuid string, resume *models.Thread
 	return thread, nil
 }
 
+// maxIdleThreadPages is how many pages in a row may bring no new entries
+// before GetThread gives up on a thread.
+const maxIdleThreadPages = 3
+
+// entryKey identifies an entry for deduplication: its UUID, or its Key when
+// the API gave none. Keying them all by "" would keep only the first entry
+// that lacks a UUID. It is "" only for entries checkpointed before Key existed; see resumable.
+func entryKey(e models.Entry) string {
+	return cmp.Or(e.UUID, e.Key)
+}
+
+// rawEntryKey identifies an API entry without a UUID: its backend UUID, or a
+// hash of the whole raw entry. Taken from the raw entry, not the exported one,
+// because the export drops fields that tell entries apart.
+func rawEntryKey(e ThreadEntry) string {
+	if e.BackendUUID != "" {
+		return "backend:" + e.BackendUUID
+	}
+	// A struct of strings, slices and maps always marshals.
+	data, _ := json.Marshal(e)
+	sum := sha256.Sum256(data)
+	return "content:" + hex.EncodeToString(sum[:])
+}
+
+// resumable reports whether every checkpointed entry can be matched against
+// the entries fetched next. Entries checkpointed before Key existed cannot be
+// told apart safely, so such a thread is fetched again from the start.
+func resumable(t *models.Thread) bool {
+	for _, e := range t.Entries {
+		if entryKey(e) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // parseTime attempts to parse a time string in multiple formats.
 func parseTime(s string) time.Time {
 	formats := []string{
@@ -273,4 +332,11 @@ func parseTime(s string) time.Time {
 	}
 
 	return time.Time{}
+}
+
+func rawEntryKeyIfNoUUID(e ThreadEntry) string {
+	if e.UUID != "" {
+		return ""
+	}
+	return rawEntryKey(e)
 }

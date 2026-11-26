@@ -2,21 +2,12 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"net/url"
 
 	"github.com/clappingmonkey/deplexity/internal/client"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
-
-// isCancellation reports whether err was caused by context cancellation or
-// deadline expiry, which must abort enrichment rather than be logged and
-// skipped like ordinary fail-soft errors.
-func isCancellation(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
 
 // rawGetter fetches an absolute URL and returns the raw body. It is satisfied
 // by *client.Client via GetRawURL and is used to download skill bodies from
@@ -39,9 +30,10 @@ type enricher interface {
 // The list endpoint omits all per-space configuration, so each space is
 // enriched with a GET /rest/collections/get_collection call and its
 // collection-scoped skills. Enrichment is best-effort: a failure to enrich one
-// space (or one of its skills) is logged and skipped rather than aborting the
-// whole export, so a single broken space never loses the rest of the data.
-func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, error) {
+// space (or one of its skills) is recorded in issues and skipped rather than
+// aborting the whole export, so a single broken space never loses the rest of
+// the data.
+func ListCollections(ctx context.Context, c *client.Client, issues *Issues) ([]models.Space, error) {
 	var raw SpacesResponse
 	path := fmt.Sprintf("/rest/spaces?version=%s&source=default", apiVersion)
 	if err := c.Get(ctx, path, &raw); err != nil {
@@ -56,21 +48,21 @@ func ListCollections(ctx context.Context, c *client.Client) ([]models.Space, err
 	allItems = append(allItems, raw.SavedSpaces...)
 	allItems = append(allItems, raw.OrganizationSpaces...)
 
-	return enrichSpaces(ctx, c, allItems)
+	return enrichSpaces(ctx, c, allItems, issues)
 }
 
 // enrichSpaces converts raw space list items into domain models and enriches
 // each with per-space detail and collection-scoped skills.
 //
 // Enrichment is best-effort: a failure to enrich one space (or one of its
-// skills) is logged and skipped rather than aborting the whole export, so a
-// single broken space never loses the rest of the data. Context cancellation
-// is the sole exception — it aborts immediately and propagates the error so an
-// interrupted export is not mistaken for a partial success.
+// skills) is recorded in issues and skipped rather than aborting the whole
+// export, so a single broken space never loses the rest of the data. Fatal
+// errors (cancellation, an expired deadline, a rejected session) abort
+// immediately so an interrupted export is not mistaken for a partial success.
 //
 // It is separated from ListCollections so the fail-soft/cancellation contract
 // can be exercised against a mock enricher without a live client.
-func enrichSpaces(ctx context.Context, c enricher, items []SpaceItem) ([]models.Space, error) {
+func enrichSpaces(ctx context.Context, c enricher, items []SpaceItem, issues *Issues) ([]models.Space, error) {
 	var spaces []models.Space
 	seenUUIDs := make(map[string]bool, len(items))
 
@@ -89,21 +81,22 @@ func enrichSpaces(ctx context.Context, c enricher, items []SpaceItem) ([]models.
 			UpdatedAt: parseTime(item.Updated),
 		}
 
+		item := fmt.Sprintf("space %q (%s)", space.Name, space.Slug)
+
 		// Enrich with per-space detail (fail-soft).
 		if err := enrichSpaceDetail(ctx, c, &space); err != nil {
-			// Context cancellation should propagate; other errors are skipped.
-			if isCancellation(err) {
+			if IsFatal(err) {
 				return nil, err
 			}
-			log.Printf("warning: could not fetch details for space %q (%s): %v", space.Name, space.Slug, err)
+			issues.Add(models.SectionSpaceDetail, item, err)
 		}
 
 		// Enrich with collection-scoped skills (fail-soft).
-		if err := enrichSpaceSkills(ctx, c, &space); err != nil {
-			if isCancellation(err) {
+		if err := enrichSpaceSkills(ctx, c, &space, issues); err != nil {
+			if IsFatal(err) {
 				return nil, err
 			}
-			log.Printf("warning: could not fetch skills for space %q (%s): %v", space.Name, space.Slug, err)
+			issues.Add(models.SectionSpaceSkills, item, err)
 		}
 
 		spaces = append(spaces, space)
@@ -127,9 +120,14 @@ func GetCollection(ctx context.Context, c getter, slug string) (*CollectionDetai
 	return &detail, nil
 }
 
+// maxSkillPages bounds skills pagination, so an API that keeps returning new
+// cursors cannot keep the export in this loop forever.
+const maxSkillPages = 1000
+
 // ListSpaceSkills fetches the skills selectable within a space via
 // GET /rest/skills/selectable?collection_uuid={uuid}, following next_cursor
-// pagination so that spaces with many skills are fully captured.
+// pagination so that spaces with many skills are fully captured. A repeated
+// cursor or more than maxSkillPages pages is an error, never a partial list.
 //
 // When collectionUUID is empty the collection_uuid parameter is omitted, which
 // the API interprets as "list account-wide skills": the response then carries
@@ -163,13 +161,17 @@ func ListSpaceSkills(ctx context.Context, c getter, collectionUUID string) ([]Sk
 			break
 		}
 		if seenCursors[*resp.NextCursor] {
-			// The cursor is repeating; stop rather than loop forever.
+			// A repeating cursor means pages were skipped or would loop
+			// forever; returning what was read so far would look complete.
 			owner := collectionUUID
 			if owner == "" {
 				owner = "global"
 			}
-			log.Printf("warning: skills pagination cursor repeated for %s; stopping", owner)
-			break
+			return nil, fmt.Errorf("skills pagination cursor repeated for %s", owner)
+		}
+		// Pages fetched so far: the first plus one per cursor followed.
+		if len(seenCursors)+1 >= maxSkillPages {
+			return nil, fmt.Errorf("skills pagination exceeded %d pages", maxSkillPages)
 		}
 		seenCursors[*resp.NextCursor] = true
 		cursor = *resp.NextCursor
@@ -231,14 +233,15 @@ func enrichSpaceDetail(ctx context.Context, c getter, space *models.Space) error
 }
 
 // enrichSpaceSkills populates a space with its collection-scoped skills,
-// including each skill's SKILL.md body. Per-skill failures are logged and
-// skipped so one bad skill does not drop the others.
+// including each skill's SKILL.md body. Per-skill failures are recorded in
+// issues and skipped so one bad skill does not drop the others; a failure to
+// list the skills is returned.
 //
 // Only skills with scope=="collection" (space-specific) are attached to a
 // space. Account-wide skills (scope=="global") apply to every request
 // regardless of space and are exported once at the account level via
 // GetAccount/ListGlobalSkills, so they are deliberately skipped here.
-func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) error {
+func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space, issues *Issues) error {
 	// skills/selectable is keyed by collection UUID; without one there is
 	// nothing to fetch.
 	if space.UUID == "" {
@@ -250,20 +253,10 @@ func enrichSpaceSkills(ctx context.Context, c enricher, space *models.Space) err
 		return err
 	}
 
-	for _, s := range summaries {
-		if s.Scope != "collection" {
-			continue
-		}
-
-		skill, err := enrichSkill(ctx, c, s, fmt.Sprintf("space %q", space.Name))
-		if err != nil {
-			// Only cancellation is returned; other failures degrade to
-			// metadata-only and are already logged.
-			return err
-		}
-
-		space.Skills = append(space.Skills, skill)
+	skills, err := enrichSkills(ctx, c, summaries, "collection", fmt.Sprintf("space %q", space.Name), issues)
+	if err != nil {
+		return err
 	}
-
+	space.Skills = append(space.Skills, skills...)
 	return nil
 }
