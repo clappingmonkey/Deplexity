@@ -28,7 +28,11 @@ go_binary(
 
 go_test(
     name = "deplexity_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "interrupt_test.go",
+        "main_test.go",
+        "signal_unix_test.go",
+    ],
     embed = [":deplexity_lib"],
     deps = [
         "//internal/export",

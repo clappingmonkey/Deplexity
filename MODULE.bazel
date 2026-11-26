@@ -17,8 +17,10 @@ go_deps.from_file(go_mod = "//:go.mod")
 use_repo(
     go_deps,
     "com_github_alecthomas_kong",
-    "com_github_go_rod_rod",
+    "com_github_chromedp_cdproto",
+    "com_github_chromedp_chromedp",
     "com_github_gpdf_dev_gpdf",
     "com_github_refraction_networking_utls",
     "com_github_schollz_progressbar_v3",
+    "org_golang_x_sys",
 )

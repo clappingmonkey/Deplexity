@@ -67,6 +67,9 @@ That's it. Your threads, spaces, and profile are now in `./deplexity-export/`.
 # Interactive browser login (recommended)
 deplexity login
 
+# Use a specific Chromium-based browser (or set DEPLEXITY_BROWSER)
+deplexity login --browser "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
 # Headless/server: provide session cookie directly
 deplexity login --cookie "YOUR_SESSION_TOKEN"
 
@@ -245,7 +248,7 @@ number of threads present in the current export.
 
 ## How It Works
 
-1. **Login** — Opens a real Chrome window (or uses a provided cookie). Captures the `__Secure-next-auth.session-token` cookie after you authenticate normally.
+1. **Login** — Opens a window of your installed Chrome, Chromium, Edge or Brave with a throwaway profile (or uses a provided cookie). Captures the `__Secure-next-auth.session-token` cookie after you authenticate normally.
 2. **Fetch** — Uses Perplexity's internal REST API with your session cookie. TLS fingerprinting matches a real Chrome browser via [utls](https://github.com/refraction-networking/utls). Adaptive rate limiting keeps requests under Perplexity's anti-abuse threshold (~2 req/s).
 3. **Export** — Converts raw API responses into clean domain models, then renders them in your chosen format(s). Exports are resumable — interrupted runs pick up where they left off.
 
@@ -306,7 +309,7 @@ Key design decisions:
 ## Requirements
 
 - **Go 1.27+** (build only)
-- **Chrome/Chromium** (for `deplexity login` only — auto-downloaded if missing)
+- **Chrome, Chromium, Edge or Brave** (for `deplexity login` only — not downloaded automatically; point to one with `--browser` / `DEPLEXITY_BROWSER`, or use `login --cookie`)
 - No runtime dependencies for `export` or `login --cookie`
 
 ---

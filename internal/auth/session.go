@@ -104,15 +104,15 @@ func CookieLogin(ctx context.Context, token string) (*models.SavedSession, error
 		SessionToken: token,
 		Cookies: []models.Cookie{
 			{
-				Name:     "__Secure-next-auth.session-token",
+				Name:     sessionCookieName,
 				Value:    token,
-				Domain:   ".perplexity.ai",
+				Domain:   "." + perplexityDomain,
 				Path:     "/",
 				Secure:   true,
 				HTTPOnly: true,
 			},
 		},
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(sessionFallbackTTL),
 	}
 
 	fmt.Println("Validating session token...")
@@ -122,6 +122,13 @@ func CookieLogin(ctx context.Context, token string) (*models.SavedSession, error
 	}
 	if !info.Valid {
 		return nil, fmt.Errorf("invalid or expired token — please check the value and try again")
+	}
+
+	// Prefer the expiry the server reports for this session, unless it is
+	// already past (e.g. clock skew), and record it on the cookie as well.
+	if info.ExpiresAt.After(time.Now()) {
+		session.ExpiresAt = info.ExpiresAt.UTC()
+		session.Cookies[0].Expires = float64(info.ExpiresAt.UnixMilli()) / 1000
 	}
 
 	fmt.Printf("Token valid for: %s\n", info.Email)

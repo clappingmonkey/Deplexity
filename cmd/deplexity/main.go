@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -63,7 +64,8 @@ type CLI struct {
 
 // LoginCmd handles authentication.
 type LoginCmd struct {
-	Cookie string `help:"Provide session token directly (bypasses browser login)." placeholder:"TOKEN"`
+	Cookie  string `help:"Provide session token directly (bypasses browser login)." placeholder:"TOKEN"`
+	Browser string `help:"Chrome, Chromium, Edge or Brave executable for browser login (default: auto-detect)." placeholder:"PATH" env:"DEPLEXITY_BROWSER"`
 }
 
 func (cmd *LoginCmd) Run(ctx context.Context) error {
@@ -73,7 +75,7 @@ func (cmd *LoginCmd) Run(ctx context.Context) error {
 	if cmd.Cookie != "" {
 		session, err = auth.CookieLogin(ctx, cmd.Cookie)
 	} else {
-		session, err = auth.BrowserLogin()
+		session, err = auth.BrowserLogin(ctx, cmd.Browser)
 	}
 	if err != nil {
 		return err
@@ -1038,6 +1040,140 @@ func (cmd *VersionCmd) Run(_ context.Context) error {
 	return nil
 }
 
+// interruptContext cancels the returned context on the first SIGINT/SIGTERM
+// and force-quits on the second, even if the current operation ignores ctx.
+// It keeps listening after the first signal rather than restoring the
+// default handling, because a process started with a signal ignored (e.g.
+// under nohup or some test runners) would otherwise drop the second one.
+func interruptContext(parent context.Context, w io.Writer) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	in := newInterrupter(cancel, forceQuit)
+	signal.Notify(in.sigCh, os.Interrupt, syscall.SIGTERM)
+	go handleInterrupts(in.sigCh, in.done, cancel, w, in.force)
+	return ctx, in.stop
+}
+
+// interrupter owns the shutdown state. stop (normal exit) and force (second
+// signal) are mutually exclusive: whichever runs first wins, and the other
+// does nothing, so a clean exit can never turn into a forced one or the
+// reverse.
+type interrupter struct {
+	mu       sync.Mutex
+	finished bool
+	sigCh    chan os.Signal
+	done     chan struct{}
+	cancel   context.CancelFunc
+	quit     func(os.Signal)
+}
+
+func newInterrupter(cancel context.CancelFunc, quit func(os.Signal)) *interrupter {
+	return &interrupter{
+		sigCh:  make(chan os.Signal, 2),
+		done:   make(chan struct{}),
+		cancel: cancel,
+		quit:   quit,
+	}
+}
+
+// finishLocked stops signal delivery and reports whether this call did it.
+func (in *interrupter) finishLocked() bool {
+	if in.finished {
+		return false
+	}
+	in.finished = true
+	signal.Stop(in.sigCh)
+	close(in.done)
+	return true
+}
+
+func (in *interrupter) stop() {
+	in.mu.Lock()
+	in.finishLocked()
+	in.mu.Unlock()
+	in.cancel()
+}
+
+// force quits unless stop already ran. The lock is held while quitting so a
+// concurrent stop waits for the process to die instead of exiting cleanly.
+func (in *interrupter) force(sig os.Signal) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.finishLocked() {
+		in.quit(sig)
+	}
+}
+
+// handleInterrupts cancels on the first signal and calls force on the second.
+// It returns when done is closed (normal exit) or after force returns. A
+// closed done wins over signals that are already queued.
+func handleInterrupts(sigCh <-chan os.Signal, done <-chan struct{}, cancel context.CancelFunc, w io.Writer, force func(os.Signal)) {
+	for first := true; ; first = false {
+		select {
+		case sig := <-sigCh:
+			if isClosed(done) {
+				return
+			}
+			if !first {
+				force(sig)
+				return
+			}
+			cancel()
+			// Written asynchronously so a blocked stderr cannot delay the
+			// cancellation or a force quit.
+			go fmt.Fprintf(w, "\nReceived %v, finishing current operation... (press Ctrl+C or send the signal again to force quit)\n", sig)
+		case <-done:
+			return
+		}
+	}
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// forceQuit re-delivers sig with its original handling restored, so the
+// process dies from the signal as usual. If that handling is to ignore it,
+// it exits with the conventional 128+n status instead.
+// forceWarningTimeout bounds the force-quit warning, so a stderr nobody
+// reads cannot keep the process alive.
+const forceWarningTimeout = 200 * time.Millisecond
+
+// writeBounded writes msg to w, but gives up after wait. A write that blocks
+// longer is left behind; the caller is about to exit.
+func writeBounded(w io.Writer, msg string, wait time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.WriteString(w, msg)
+		close(done)
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+
+func forceQuit(sig os.Signal) {
+	// os.Exit skips deferred cleanup, so stop a login browser first.
+	if err := auth.KillLoginHelpers(); err != nil {
+		writeBounded(os.Stderr, fmt.Sprintf("warning: %v\n", err), forceWarningTimeout)
+	}
+	code := 130
+	if s, ok := sig.(syscall.Signal); ok {
+		code = 128 + int(s)
+	}
+	if p, err := os.FindProcess(os.Getpid()); err == nil && p.Signal(sig) == nil {
+		time.Sleep(500 * time.Millisecond)
+	}
+	os.Exit(code)
+}
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == pdfHelperArg {
 		if err := runPDFRenderHelper(os.Stdin, os.Stdout); err != nil {
@@ -1046,18 +1182,16 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == auth.BrowserHelperArg {
+		if err := auth.RunBrowserLoginHelper(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	// Print message only on actual Ctrl+C; second Ctrl+C force-kills via default OS handler.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	go func() {
-		<-sigCh
-		fmt.Fprintf(os.Stderr, "\nInterrupted, finishing current operation... (Ctrl+C again to force quit)\n")
-		signal.Stop(sigCh)
-	}()
+	ctx, stop := interruptContext(context.Background(), os.Stderr)
+	defer stop()
 
 	var cli CLI
 	kctx := kong.Parse(&cli,
