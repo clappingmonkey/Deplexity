@@ -35,7 +35,10 @@ var (
 	buildTime = "unknown"
 )
 
-var errIncompleteThreadExport = errors.New("thread export incomplete")
+var (
+	errIncompleteThreadExport = errors.New("thread export incomplete")
+	errIncompleteSections     = errors.New("space or skill export incomplete")
+)
 
 const (
 	pdfHelperArg      = "__pdf-render-helper"
@@ -181,18 +184,24 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 		}
 	}
 
+	// Non-fatal failures of spaces and skills are collected here, written to
+	// the manifest, and make the command exit non-zero after everything else
+	// has been exported.
+	issues := &api.Issues{}
+
 	// === Spaces ===
 	var spaces []models.Space
 	if cmd.Spaces {
 		fmt.Print("Fetching spaces...")
-		spaces, err = api.ListCollections(ctx, c)
+		spaces, err = api.ListCollections(ctx, c, issues)
 		if err != nil {
-			// Cancellation must abort the whole export, not be swallowed as a
-			// skipped section.
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Cancellation or a rejected session must abort the whole
+			// export, not be recorded as a skipped section.
+			if api.IsFatal(err) {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, " skipped (%v)\n", err)
+			fmt.Fprintln(os.Stderr, " skipped")
+			issues.Add(models.SectionSpaces, "", err)
 			spaces = nil
 		} else {
 			fmt.Printf(" %d spaces found\n", len(spaces))
@@ -231,14 +240,15 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 	var account *models.Account
 	if cmd.Spaces {
 		fmt.Print("Fetching global skills...")
-		account, err = api.GetAccount(ctx, c)
+		account, err = api.GetAccount(ctx, c, issues)
 		if err != nil {
-			// Cancellation must abort the whole export; other errors are a
-			// skipped section, matching how spaces are handled above.
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Fatal errors abort; other errors are a skipped section,
+			// matching how spaces are handled above.
+			if api.IsFatal(err) {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, " skipped (%v)\n", err)
+			fmt.Fprintln(os.Stderr, " skipped")
+			issues.Add(models.SectionGlobalSkills, "", err)
 			account = nil
 		} else {
 			fmt.Printf(" %d global skills found\n", len(account.GlobalSkills))
@@ -247,16 +257,29 @@ func (cmd *ExportCmd) Run(ctx context.Context) error {
 
 	// === Phase 3: Format export ===
 	for _, format := range cmd.Format {
+		// A canceled run must not go on to the next format, and must never
+		// reach the manifest, which would mark the export as finished.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := cmd.exportFormat(ctx, format, threads, spaces, user, account); err != nil {
-			return fmt.Errorf("export %s failed: %w", format, err)
+			err = fmt.Errorf("export %s failed: %w", format, err)
+			if ctx.Err() != nil {
+				return err
+			}
+			// Replace any manifest of an earlier run, which would still
+			// describe a finished export.
+			sections := append(issues.List(), models.SectionFailure{Section: models.SectionFormat, Item: format, Error: err.Error()})
+			manifest := buildManifest(cmd.Format, threads, threadRefs, spaces, account, threadFailures, sections)
+			return errors.Join(err, finalizeExport(ctx, jsonExp, manifest))
 		}
 	}
 
-	// Write the manifest before reporting a partial thread failure so successful
+	// Write the manifest before reporting a partial failure so successful
 	// output remains usable and the incomplete run is machine-detectable.
-	manifest := buildManifest(cmd.Format, threads, threadRefs, spaces, account, threadFailures)
+	manifest := buildManifest(cmd.Format, threads, threadRefs, spaces, account, threadFailures, issues.List())
 
-	if err := finalizeExport(jsonExp, manifest); err != nil {
+	if err := finalizeExport(ctx, jsonExp, manifest); err != nil {
 		return err
 	}
 
@@ -275,24 +298,37 @@ func requestDelay(milliseconds int) (time.Duration, error) {
 	return time.Duration(milliseconds) * time.Millisecond, nil
 }
 
-func finalizeExport(jsonExp *export.JSONExporter, manifest *models.ExportManifest) error {
-	if err := jsonExp.ExportManifest(manifest); err != nil {
+func finalizeExport(ctx context.Context, jsonExp *export.JSONExporter, manifest *models.ExportManifest) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(manifest.FailedThreads) > 0 {
-		return fmt.Errorf("%w: %d of %d threads failed; re-run the same command to resume", errIncompleteThreadExport, len(manifest.FailedThreads), manifest.ExpectedThreads)
+	if err := jsonExp.ExportManifest(ctx, manifest); err != nil {
+		return err
 	}
-	return nil
+	// A run canceled while the manifest was written does not report success.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var errs []error
+	if len(manifest.FailedThreads) > 0 {
+		errs = append(errs, fmt.Errorf("%w: %d of %d threads failed; re-run the same command to resume", errIncompleteThreadExport, len(manifest.FailedThreads), manifest.ExpectedThreads))
+	}
+	if len(manifest.FailedSections) > 0 {
+		errs = append(errs, fmt.Errorf("%w: %d space or skill items failed; see failed_sections in manifest.json", errIncompleteSections, len(manifest.FailedSections)))
+	}
+	return errors.Join(errs...)
 }
 
-func buildManifest(formats []string, threads []models.Thread, refs []models.ThreadRef, spaces []models.Space, account *models.Account, failures []models.ThreadExportFailure) *models.ExportManifest {
+func buildManifest(formats []string, threads []models.Thread, refs []models.ThreadRef, spaces []models.Space, account *models.Account, failures []models.ThreadExportFailure, sections []models.SectionFailure) *models.ExportManifest {
 	manifest := &models.ExportManifest{
-		Version:         version,
-		ExportedAt:      time.Now().UTC(),
-		Formats:         formats,
-		ThreadsComplete: len(failures) == 0,
-		ExpectedThreads: len(refs),
-		FailedThreads:   failures,
+		Version:          version,
+		ExportedAt:       time.Now().UTC(),
+		Formats:          formats,
+		ThreadsComplete:  len(failures) == 0,
+		ExpectedThreads:  len(refs),
+		FailedThreads:    failures,
+		SectionsComplete: len(sections) == 0,
+		FailedSections:   sections,
 		Counts: models.ExportCounts{
 			Threads: len(threads),
 			Spaces:  len(spaces),
@@ -328,13 +364,15 @@ func persistThreadRetryState(jsonExp *export.JSONExporter, refs []models.ThreadR
 		return errors.New("could not save thread retry state: thread index is missing")
 	}
 
-	retryByUUID := make(map[string]bool, len(refs))
+	byUUID := make(map[string]models.ThreadRef, len(refs))
 	for _, ref := range refs {
-		retryByUUID[ref.UUID] = ref.RetryRequired
+		byUUID[ref.UUID] = ref
 	}
 	for i := range index.Threads {
-		if retry, ok := retryByUUID[index.Threads[i].UUID]; ok {
-			index.Threads[i].RetryRequired = retry
+		if ref, ok := byUUID[index.Threads[i].UUID]; ok {
+			index.Threads[i].RetryRequired = ref.RetryRequired
+			index.Threads[i].FetchedUpdatedAt = ref.FetchedUpdatedAt
+			index.Threads[i].CacheSlug = ref.CacheSlug
 		}
 	}
 	if err := jsonExp.SaveThreadIndex(index); err != nil {
@@ -384,6 +422,9 @@ func (cmd *ExportCmd) freshListThreads(ctx context.Context, jsonExp *export.JSON
 	refs := buildRefsFromThreads(threads)
 	if previous != nil {
 		attachPreviousUpdatedAt(refs, previous.Threads)
+	}
+	if cmd.Refresh {
+		markChangedThreads(refs)
 	}
 	if err != nil {
 		index.Threads = mergeIncompleteThreadRefs(refs, previous)
@@ -451,7 +492,7 @@ func finalizeIndex(jsonExp *export.JSONExporter, index *models.ThreadIndex) erro
 func buildRefsFromThreads(threads []models.Thread) []models.ThreadRef {
 	refs := make([]models.ThreadRef, 0, len(threads))
 	for _, t := range threads {
-		refs = append(refs, models.ThreadRef{UUID: t.UUID, Slug: t.Slug, Title: t.Title, SpaceUUID: t.SpaceUUID, UpdatedAt: t.UpdatedAt})
+		refs = append(refs, models.ThreadRef{UUID: t.UUID, Slug: t.Slug, Title: t.Title, SpaceUUID: t.SpaceUUID, SpaceKnown: true, UpdatedAt: t.UpdatedAt})
 	}
 	return refs
 }
@@ -464,6 +505,9 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 	var missing []int
 	failuresByUUID := make(map[string]models.ThreadExportFailure)
 	for i, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		cached, err := jsonExp.LoadCompleteThread(ref)
 		if needsThreadFetch(cmd.Refresh, ref, cached, err) {
 			missing = append(missing, i)
@@ -493,14 +537,21 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 				partial = nil
 			}
 			applyThreadRefMetadata(partial, *ref)
-			resume := resumePoint(cmd.Refresh, partial)
+			resume := resumePoint(cmd.Refresh, partial, *ref)
 			if resume != nil {
 				fmt.Printf("\n  Resuming thread %s (%d entries so far)\n", ref.UUID, len(resume.Entries))
 			}
 
 			onPage := func(t *models.Thread) error {
 				applyThreadRefMetadata(t, *ref)
-				return jsonExp.ExportThread(t)
+				t.ListedUpdatedAt = ref.UpdatedAt
+				if err := jsonExp.ExportThread(t); err != nil {
+					return &checkpointError{err}
+				}
+				if err := moveThreadCache(jsonExp, ref, t.Slug); err != nil {
+					return &checkpointError{err}
+				}
+				return nil
 			}
 
 			full, err := getThread(ctx, ref.UUID, resume, onPage)
@@ -509,18 +560,22 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 					return nil, orderedThreadFailures(refs, failuresByUUID), err
 				}
 				fmt.Fprintf(os.Stderr, "\n  Warning: could not fetch thread %s: %v\n", ref.UUID, err)
-				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageFetch, Error: err.Error()}
+				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: fetchFailureStage(err), Error: err.Error()}
 				_ = bar.Add(1)
 				continue
 			}
 			applyThreadRefMetadata(full, *ref)
+			full.ListedUpdatedAt = ref.UpdatedAt
 
 			// Write to disk immediately
 			if err := jsonExp.ExportThread(full); err != nil {
 				fmt.Fprintf(os.Stderr, "\n  Warning: could not write thread %s: %v\n", ref.UUID, err)
 				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageWrite, Error: err.Error()}
+			} else if err := moveThreadCache(jsonExp, ref, full.Slug); err != nil {
+				failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageWrite, Error: err.Error()}
 			} else {
 				ref.RetryRequired = false
+				ref.FetchedUpdatedAt = ref.UpdatedAt
 			}
 			_ = bar.Add(1)
 		}
@@ -532,6 +587,9 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 	// Load all threads from disk
 	threads := make([]models.Thread, 0, len(refs))
 	for i, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, orderedThreadFailures(refs, failuresByUUID), err
+		}
 		if _, failed := failuresByUUID[ref.UUID]; failed {
 			continue
 		}
@@ -548,6 +606,11 @@ func (cmd *ExportCmd) fetchThreadDetails(ctx context.Context, jsonExp *export.JS
 				refs[i].RetryRequired = true
 				continue
 			}
+		}
+		if err := moveThreadCache(jsonExp, &refs[i], t.Slug); err != nil {
+			failuresByUUID[ref.UUID] = models.ThreadExportFailure{UUID: ref.UUID, Title: ref.Title, Stage: models.ThreadExportStageWrite, Error: err.Error()}
+			refs[i].RetryRequired = true
+			continue
 		}
 		threads = append(threads, *t)
 	}
@@ -571,7 +634,9 @@ func applyThreadRefMetadata(thread *models.Thread, ref models.ThreadRef) bool {
 		thread.Title = ref.Title
 		changed = true
 	}
-	if ref.SpaceUUID != "" && thread.SpaceUUID != ref.SpaceUUID {
+	// A current listing is authoritative, including for a thread that was
+	// removed from its space; an older ref without SpaceKnown is not.
+	if (ref.SpaceKnown || ref.SpaceUUID != "") && thread.SpaceUUID != ref.SpaceUUID {
 		thread.SpaceUUID = ref.SpaceUUID
 		changed = true
 	}
@@ -594,9 +659,14 @@ func orderedThreadFailures(refs []models.ThreadRef, failuresByUUID map[string]mo
 
 // resumePoint reports the checkpoint an interrupted fetch should continue
 // from, or nil to fetch from the first page. Refresh runs never resume, since
-// entries cached before the thread changed may be stale.
-func resumePoint(refresh bool, partial *models.Thread) *models.Thread {
+// entries cached before the thread changed may be stale. Nor does a
+// checkpoint written for a different (or unknown) listing timestamp: its
+// entries may predate the version of the thread the listing now shows.
+func resumePoint(refresh bool, partial *models.Thread, ref models.ThreadRef) *models.Thread {
 	if refresh || partial == nil || partial.Complete || partial.NextCursor == "" {
+		return nil
+	}
+	if ref.UpdatedAt.IsZero() || !partial.ListedUpdatedAt.Equal(ref.UpdatedAt) {
 		return nil
 	}
 	return partial
@@ -606,19 +676,49 @@ func needsThreadFetch(refresh bool, ref models.ThreadRef, cached *models.Thread,
 	if ref.RetryRequired || err != nil || cached == nil {
 		return true
 	}
-	return refresh && (ref.UpdatedAt.IsZero() || ref.PreviousUpdatedAt.IsZero() || ref.UpdatedAt.After(ref.PreviousUpdatedAt))
+	return refresh && changedSinceFetch(ref)
 }
 
+// changedSinceFetch reports whether the listing shows a thread newer than the
+// detail last fetched for it, or gives no way to tell.
+func changedSinceFetch(ref models.ThreadRef) bool {
+	return ref.UpdatedAt.IsZero() || ref.FetchedUpdatedAt.IsZero() || ref.UpdatedAt.After(ref.FetchedUpdatedAt)
+}
+
+// markChangedThreads flags every ref that a --refresh must fetch again, so
+// the flag is saved with the index before any detail is fetched. A run that
+// stops early then still refetches those threads next time.
+func markChangedThreads(refs []models.ThreadRef) {
+	for i := range refs {
+		if changedSinceFetch(refs[i]) {
+			refs[i].RetryRequired = true
+		}
+	}
+}
+
+// attachPreviousUpdatedAt carries the per-thread state of the previous index
+// over to freshly listed refs: retry flags, the cached detail's watermark and
+// the slug it was written under. The new listing's own UpdatedAt must not
+// replace the watermark, or an interrupted --refresh would make the next run
+// treat a stale detail as current.
 func attachPreviousUpdatedAt(refs []models.ThreadRef, previous []models.ThreadRef) {
 	previousByUUID := make(map[string]models.ThreadRef, len(previous))
 	for _, ref := range previous {
 		previousByUUID[ref.UUID] = ref
 	}
 	for i := range refs {
-		previousRef := previousByUUID[refs[i].UUID]
+		previousRef, ok := previousByUUID[refs[i].UUID]
+		if !ok {
+			continue
+		}
 		refs[i].PreviousUpdatedAt = previousRef.UpdatedAt
-		refs[i].PreviousSlug = previousRef.Slug
 		refs[i].RetryRequired = previousRef.RetryRequired
+		// Older indexes are migrated by LoadThreadIndex. A missing watermark
+		// stays missing: the listing's UpdatedAt says nothing about the
+		// detail on disk.
+		refs[i].FetchedUpdatedAt = previousRef.FetchedUpdatedAt
+		refs[i].CacheSlug = previousRef.CacheSlug
+		refs[i].PreviousSlug = previousRef.Slug
 	}
 }
 
@@ -870,6 +970,9 @@ func renderPDFIsolated(ctx context.Context, timeout time.Duration, thread *model
 	}
 	stagingPath := staging.Name()
 	defer os.Remove(stagingPath)
+	// Closes the file on every early return; the second Close after the
+	// explicit one below only returns an ignored error.
+	defer staging.Close()
 
 	renderCtx := ctx
 	cancel := func() {}
@@ -901,7 +1004,7 @@ func renderPDFIsolated(ctx context.Context, timeout time.Duration, thread *model
 			return err
 		}
 		if timeout > 0 && errors.Is(renderCtx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("PDF TIMEOUT: thread %q (%s) exceeded the %s per-thread limit; the renderer was terminated and no new PDF was published; any existing PDF was left unchanged; remaining PDF work was canceled", thread.Title, thread.UUID, timeout)
+			return fmt.Errorf("PDF TIMEOUT: thread %q (%s) exceeded the %s per-thread limit; the renderer was terminated and no new PDF was published; any existing PDF was left unchanged; remaining PDF work was canceled: %w", thread.Title, thread.UUID, timeout, context.DeadlineExceeded)
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message != "" {
@@ -1207,4 +1310,37 @@ func main() {
 
 	err := kctx.Run()
 	kctx.FatalIfErrorf(err)
+}
+
+// moveThreadCache records that ref's detail was just written under slug and
+// drops the cached copy under the previous cache slug, so a run that stops
+// before the index is saved cannot load that older copy instead. An empty
+// slug never replaces a known location. The new location is recorded even when
+// the old copy cannot be removed, so a retry never goes back to it.
+func moveThreadCache(jsonExp *export.JSONExporter, ref *models.ThreadRef, slug string) error {
+	if slug == "" {
+		return nil
+	}
+	old := ref.CacheSlug
+	ref.CacheSlug = slug
+	if old != "" && old != slug {
+		if err := jsonExp.DropThreadCache(ref.UUID, old, slug); err != nil {
+			return fmt.Errorf("could not drop old cache of thread %s: %w", ref.UUID, err)
+		}
+	}
+	return nil
+}
+
+// checkpointError marks a failure to save a fetched page, as opposed to a
+// failure to fetch it.
+type checkpointError struct{ err error }
+
+func (e *checkpointError) Error() string { return e.err.Error() }
+func (e *checkpointError) Unwrap() error { return e.err }
+
+func fetchFailureStage(err error) string {
+	if _, ok := errors.AsType[*checkpointError](err); ok {
+		return models.ThreadExportStageWrite
+	}
+	return models.ThreadExportStageFetch
 }

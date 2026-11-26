@@ -3,6 +3,7 @@ package export
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,15 +36,15 @@ func writeThreadMarkdown(dir string, thread *models.Thread) error {
 	if title == "" {
 		title = "Untitled Thread"
 	}
-	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
+	sb.WriteString(fmt.Sprintf("# %s\n\n", markdownText(title)))
 
 	// Metadata
 	sb.WriteString(fmt.Sprintf("- **Thread ID:** %s\n", thread.UUID))
 	if !thread.CreatedAt.IsZero() {
-		sb.WriteString(fmt.Sprintf("- **Created:** %s\n", thread.CreatedAt.Format("2006-01-02 15:04:05 UTC")))
+		sb.WriteString(fmt.Sprintf("- **Created:** %s\n", thread.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC")))
 	}
 	if !thread.UpdatedAt.IsZero() {
-		sb.WriteString(fmt.Sprintf("- **Updated:** %s\n", thread.UpdatedAt.Format("2006-01-02 15:04:05 UTC")))
+		sb.WriteString(fmt.Sprintf("- **Updated:** %s\n", thread.UpdatedAt.UTC().Format("2006-01-02 15:04:05 UTC")))
 	}
 	if thread.SpaceUUID != "" {
 		sb.WriteString(fmt.Sprintf("- **Space:** %s\n", thread.SpaceUUID))
@@ -70,9 +71,9 @@ func writeThreadMarkdown(dir string, thread *models.Thread) error {
 				if title == "" {
 					title = source.URL
 				}
-				sb.WriteString(fmt.Sprintf("%d. [%s](%s)", j+1, title, source.URL))
+				sb.WriteString(fmt.Sprintf("%d. %s", j+1, markdownLink(title, source.URL)))
 				if source.Snippet != "" {
-					sb.WriteString(fmt.Sprintf(" — %s", source.Snippet))
+					sb.WriteString(fmt.Sprintf(" — %s", markdownText(source.Snippet)))
 				}
 				sb.WriteString("\n")
 			}
@@ -86,7 +87,7 @@ func writeThreadMarkdown(dir string, thread *models.Thread) error {
 	}
 
 	path := filepath.Join(dir, "thread.md")
-	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+	if err := writeBytes(path, []byte(sb.String())); err != nil {
 		return fmt.Errorf("could not write markdown file: %w", err)
 	}
 
@@ -105,7 +106,7 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 	spaceDirs := spaceDirNames(spaces)
 
 	for spaceIndex, space := range spaces {
-		sb.WriteString(fmt.Sprintf("## %s\n\n", space.Name))
+		sb.WriteString(fmt.Sprintf("## %s\n\n", markdownText(space.Name)))
 		if space.Description != "" {
 			sb.WriteString(fmt.Sprintf("%s\n\n", space.Description))
 		}
@@ -116,7 +117,7 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 		}
 		sb.WriteString(fmt.Sprintf("- **UUID:** %s\n", space.UUID))
 		if space.CreatedAt != nil {
-			sb.WriteString(fmt.Sprintf("- **Created:** %s\n", space.CreatedAt.Format("2006-01-02 15:04:05 UTC")))
+			sb.WriteString(fmt.Sprintf("- **Created:** %s\n", space.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC")))
 		}
 		if len(space.ThreadUUIDs) > 0 {
 			sb.WriteString(fmt.Sprintf("- **Threads:** %d\n", len(space.ThreadUUIDs)))
@@ -148,9 +149,9 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 					// path.Join (forward slashes) keeps the Markdown link valid
 					// on every OS, unlike filepath.Join on Windows.
 					link := path.Join(spaceDirs[spaceIndex], "skills", filenames[i])
-					sb.WriteString(fmt.Sprintf("- [%s](%s)", sk.Name, link))
+					sb.WriteString("- " + markdownLink(sk.Name, link))
 				} else {
-					sb.WriteString(fmt.Sprintf("- %s", sk.Name))
+					sb.WriteString(fmt.Sprintf("- %s", markdownText(sk.Name)))
 				}
 				if sk.Description != "" {
 					sb.WriteString(fmt.Sprintf(" — %s", sk.Description))
@@ -163,7 +164,7 @@ func (e *MarkdownExporter) ExportSpaces(ctx context.Context, spaces []models.Spa
 	}
 
 	spacesMD := filepath.Join(dir, "spaces.md")
-	if err := os.WriteFile(spacesMD, []byte(sb.String()), 0644); err != nil {
+	if err := writeBytes(spacesMD, []byte(sb.String())); err != nil {
 		return fmt.Errorf("could not write spaces markdown: %w", err)
 	}
 
@@ -218,7 +219,7 @@ func writeSpaceSkillBodies(baseDir string, skills []models.Skill) error {
 			}
 		}
 		filename := filenames[i]
-		if err := os.WriteFile(filepath.Join(skillsDir, filename), []byte(skills[i].Body), 0644); err != nil {
+		if err := writeBytes(filepath.Join(skillsDir, filename), []byte(skills[i].Body)); err != nil {
 			return fmt.Errorf("could not write skill body %s: %w", filename, err)
 		}
 	}
@@ -234,7 +235,7 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 
 	var sb strings.Builder
 	sb.WriteString("# Perplexity Profile\n\n")
-	sb.WriteString(fmt.Sprintf("- **Name:** %s\n", user.Name))
+	sb.WriteString(fmt.Sprintf("- **Name:** %s\n", markdownText(user.Name)))
 	sb.WriteString(fmt.Sprintf("- **Email:** %s\n", user.Email))
 	if user.Subscription != "" {
 		sb.WriteString(fmt.Sprintf("- **Subscription:** %s\n", user.Subscription))
@@ -242,7 +243,7 @@ func (e *MarkdownExporter) ExportUser(user *models.User) error {
 	sb.WriteString(fmt.Sprintf("- **User ID:** %s\n", user.ID))
 
 	path := filepath.Join(dir, "user.md")
-	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+	if err := writeBytes(path, []byte(sb.String())); err != nil {
 		return fmt.Errorf("could not write profile markdown: %w", err)
 	}
 
@@ -281,9 +282,9 @@ func (e *MarkdownExporter) ExportAccount(account *models.Account) error {
 				// Link relative to global-skills.md, which lives in the account
 				// dir. path.Join keeps forward slashes for portable Markdown.
 				link := path.Join("skills", filenames[i])
-				sb.WriteString(fmt.Sprintf("- [%s](%s)", sk.Name, link))
+				sb.WriteString("- " + markdownLink(sk.Name, link))
 			} else {
-				sb.WriteString(fmt.Sprintf("- %s", sk.Name))
+				sb.WriteString(fmt.Sprintf("- %s", markdownText(sk.Name)))
 			}
 			if sk.Description != "" {
 				sb.WriteString(fmt.Sprintf(" — %s", sk.Description))
@@ -293,7 +294,7 @@ func (e *MarkdownExporter) ExportAccount(account *models.Account) error {
 	}
 
 	out := filepath.Join(dir, "global-skills.md")
-	if err := os.WriteFile(out, []byte(sb.String()), 0644); err != nil {
+	if err := writeBytes(out, []byte(sb.String())); err != nil {
 		return fmt.Errorf("could not write global skills markdown: %w", err)
 	}
 	return nil
@@ -319,4 +320,48 @@ func blockquote(text string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// markdownText escapes plain text, such as a title or a name, for inline
+// Markdown: it cannot start a link, code span, emphasis, HTML tag or entity,
+// and stays on one line. Answers, queries and descriptions are Markdown as
+// written and are not passed through it.
+func markdownText(s string) string {
+	return markdownTextEscaper.Replace(s)
+}
+
+// markdownLink renders a Markdown link whose text and target cannot break out
+// of the link syntax. The target is checked before it is written, and written
+// so that Markdown reads back exactly the checked URL: backslashes, spaces and
+// angle brackets are percent-encoded and & is written as &amp;, so neither a
+// backslash escape nor an entity such as &#58; can change it. Targets with
+// parentheses are wrapped in <...>. Targets that do
+// not parse, or whose scheme is not http(s) or mailto (javascript:, data:,
+// ...), are shown as plain text instead.
+func markdownLink(text, target string) string {
+	text = markdownText(text)
+	u, err := url.Parse(target)
+	if err != nil || target == "" || !allowedLinkScheme(u.Scheme) {
+		return text
+	}
+	target = markdownLinkTarget.Replace(target)
+	if strings.ContainsAny(target, "()") {
+		target = "<" + target + ">"
+	}
+	return "[" + text + "](" + target + ")"
+}
+
+var (
+	markdownTextEscaper = strings.NewReplacer(
+		`\`, `\\`, "`", "\\`", "*", `\*`, "_", `\_`, "[", `\[`, "]", `\]`,
+		"<", `\<`, ">", `\>`, "&", `\&`, "!", `\!`, "|", `\|`, "~", `\~`,
+		"\r\n", " ", "\r", " ", "\n", " ",
+	)
+	markdownLinkTarget = strings.NewReplacer(`\`, "%5C", "<", "%3C", ">", "%3E", " ", "%20", "&", "&amp;")
+)
+
+// allowedLinkScheme reports whether a link target with this scheme may be
+// written as a link: relative targets, http(s) and mailto, in any case.
+func allowedLinkScheme(scheme string) bool {
+	return scheme == "" || strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https") || strings.EqualFold(scheme, "mailto")
 }

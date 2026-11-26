@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -23,11 +25,18 @@ func (e *JSONExporter) SaveThreadIndex(index *models.ThreadIndex) error {
 	if err := os.MkdirAll(e.OutputDir, 0755); err != nil {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
+	index.Version = models.ThreadIndexVersion
 	return writeJSON(filepath.Join(e.OutputDir, "thread_index.json"), index)
 }
 
 // LoadThreadIndex reads the cached thread index from disk.
 // Returns nil if the file does not exist.
+//
+// An index written before fetch watermarks existed is migrated once: each
+// thread's detail is assumed to sit under its slug, but its watermark stays
+// unknown. An interrupted --refresh on those versions could save a listing
+// time newer than the detail on disk, so that time is not trusted; the next
+// --refresh fetches every thread once. Plain runs are unaffected.
 func (e *JSONExporter) LoadThreadIndex() (*models.ThreadIndex, error) {
 	path := filepath.Join(e.OutputDir, "thread_index.json")
 	data, err := os.ReadFile(path)
@@ -41,6 +50,15 @@ func (e *JSONExporter) LoadThreadIndex() (*models.ThreadIndex, error) {
 	var index models.ThreadIndex
 	if err := json.Unmarshal(data, &index); err != nil {
 		return nil, err
+	}
+	if index.Version < 1 {
+		for i := range index.Threads {
+			ref := &index.Threads[i]
+			if ref.CacheSlug == "" {
+				ref.CacheSlug = ref.Slug
+			}
+		}
+		index.Version = models.ThreadIndexVersion
 	}
 	return &index, nil
 }
@@ -58,18 +76,30 @@ func (e *JSONExporter) LoadCompleteThread(ref models.ThreadRef) (*models.Thread,
 	return thread, nil
 }
 
+func threadDirPath(outputDir, slug, uuid string) string {
+	return filepath.Join(outputDir, "threads", threadDirName(slug, uuid), "thread.json")
+}
+
 // LoadThread reads a single thread from its JSON file on disk.
 func (e *JSONExporter) LoadThread(ref models.ThreadRef) (*models.Thread, error) {
-	paths := []string{
-		filepath.Join(e.OutputDir, "threads", threadDirName(ref.Slug, ref.UUID), "thread.json"),
+	// The slug the latest detail was written under comes first: a thread
+	// renamed back to an older slug can still have a stale copy there. Then
+	// the current slug, and the slug from the previous index.
+	var paths []string
+	for _, slug := range []string{ref.CacheSlug, ref.Slug, ref.PreviousSlug} {
+		if p := threadDirPath(e.OutputDir, slug, ref.UUID); slug != "" && !slices.Contains(paths, p) {
+			paths = append(paths, p)
+		}
 	}
-	if ref.PreviousSlug != "" && ref.PreviousSlug != ref.Slug {
-		paths = append(paths, filepath.Join(e.OutputDir, "threads", threadDirName(ref.PreviousSlug, ref.UUID), "thread.json"))
+	// Legacy UUID-only cache paths.
+	for _, p := range []string{
+		threadDirPath(e.OutputDir, "", ref.UUID),
+		filepath.Join(e.OutputDir, "threads", sanitizeFilename(ref.UUID), "thread.json"),
+	} {
+		if !slices.Contains(paths, p) {
+			paths = append(paths, p)
+		}
 	}
-	if ref.Slug != "" {
-		paths = append(paths, filepath.Join(e.OutputDir, "threads", threadDirName("", ref.UUID), "thread.json"))
-	}
-	paths = append(paths, filepath.Join(e.OutputDir, "threads", sanitizeFilename(ref.UUID), "thread.json"))
 	var lastErr error
 	for _, threadPath := range paths {
 		data, err := os.ReadFile(threadPath)
@@ -168,8 +198,8 @@ func (e *JSONExporter) ExportThreadIndex(threads []models.Thread) error {
 			UUID:       t.UUID,
 			Slug:       t.Slug,
 			Title:      t.Title,
-			CreatedAt:  t.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:  t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:  t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:  t.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			SpaceUUID:  t.SpaceUUID,
 			Bookmarked: t.Bookmarked,
 			EntryCount: len(t.Entries),
@@ -279,8 +309,12 @@ func (e *JSONExporter) ExportAccount(account *models.Account) error {
 }
 
 // ExportManifest writes the export manifest.
-func (e *JSONExporter) ExportManifest(manifest *models.ExportManifest) error {
-	return writeJSON(filepath.Join(e.OutputDir, "manifest.json"), manifest)
+func (e *JSONExporter) ExportManifest(ctx context.Context, manifest *models.ExportManifest) error {
+	// An export of nothing but the manifest has created no directory yet.
+	if err := os.MkdirAll(e.OutputDir, 0755); err != nil {
+		return fmt.Errorf("could not create output directory: %w", err)
+	}
+	return writeJSONContext(ctx, filepath.Join(e.OutputDir, "manifest.json"), manifest)
 }
 
 // threadDir returns the output directory for a thread.
@@ -332,7 +366,7 @@ func writeSkillBodiesJSON(baseDir string, skills []models.Skill) error {
 			}
 		}
 		filename := filenames[i]
-		if err := os.WriteFile(filepath.Join(skillsDir, filename), []byte(skills[i].Body), 0644); err != nil {
+		if err := writeBytes(filepath.Join(skillsDir, filename), []byte(skills[i].Body)); err != nil {
 			return fmt.Errorf("could not write skill body %s: %w", filename, err)
 		}
 		// Use path.Join (forward slashes) so body_file is portable in JSON
@@ -348,7 +382,34 @@ func writeSkillBodiesJSON(baseDir string, skills []models.Skill) error {
 // target, so a crash mid-write cannot corrupt an existing file. This matters
 // for thread.json, which is rewritten on every pagination checkpoint and must
 // stay a valid resume point even if a later write fails.
-func writeJSON(path string, data interface{}) error {
+func writeJSON(path string, data any) error {
+	return writeJSONContext(context.Background(), path, data)
+}
+
+// writeJSONContext is writeJSON that publishes nothing once ctx is done.
+func writeJSONContext(ctx context.Context, path string, data any) error {
+	return writeFileAtomic(ctx, path, func(w io.Writer) error {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
+		return enc.Encode(data)
+	})
+}
+
+// writeBytes writes data to path atomically. Like the JSON files, the file
+// is private (0600): it holds the user's threads.
+func writeBytes(path string, data []byte) error {
+	return writeFileAtomic(context.Background(), path, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// writeFileAtomic writes a temp file next to path and renames it into place,
+// so readers never see a half-written file, and a symlink at path is
+// replaced instead of followed. The file is created 0600 and stays so. ctx
+// is checked right before the rename, so a canceled run publishes nothing.
+func writeFileAtomic(ctx context.Context, path string, write func(io.Writer) error) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("could not create temp file for %s: %w", path, err)
@@ -361,13 +422,9 @@ func writeJSON(path string, data interface{}) error {
 		}
 	}()
 
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	enc.SetEscapeHTML(false)
-
-	if err := enc.Encode(data); err != nil {
+	if err := write(tmp); err != nil {
 		tmp.Close()
-		return fmt.Errorf("could not write JSON to %s: %w", path, err)
+		return fmt.Errorf("could not write %s: %w", path, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
@@ -376,10 +433,35 @@ func writeJSON(path string, data interface{}) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("could not close temp file for %s: %w", path, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("could not replace %s: %w", path, err)
 	}
 	tmpName = "" // rename succeeded; skip cleanup
+	// Best effort: persist the rename itself. Windows cannot sync a
+	// directory, and the file is already complete either way.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
+}
+
+// DropThreadCache removes the cached thread.json written under from, now that
+// the detail lives under to, so the old copy cannot be loaded. Different slugs
+// can name the same directory (case, punctuation, length), and then nothing
+// is removed. Other files in that directory are left as they are.
+func (e *JSONExporter) DropThreadCache(uuid, from, to string) error {
+	old := threadDirPath(e.OutputDir, from, uuid)
+	if from == "" || old == threadDirPath(e.OutputDir, to, uuid) {
+		return nil
+	}
+	err := os.Remove(old)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }

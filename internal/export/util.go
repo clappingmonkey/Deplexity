@@ -13,6 +13,12 @@ var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 const maxFilenameLength = 128
 
+var windowsReservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true, "com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true, "lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
 // sanitizeFilename replaces characters unsafe for file/directory names.
 func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
@@ -28,7 +34,7 @@ func sanitizeFilename(name string) string {
 		name = "unnamed"
 	}
 
-	// Limit length
+	// Only ASCII is left, so cutting bytes never splits a character.
 	if len(name) > maxFilenameLength {
 		name = name[:maxFilenameLength]
 	}
@@ -137,6 +143,13 @@ func skillFilenames(skills []models.Skill) []string {
 		name := base
 		if counts[base] > 1 {
 			name = base + "-" + shortID(skills[i].ID)
+		}
+		// Windows reserves device names such as "con" and "nul", even with
+		// an extension. Thread and space directories always end in an
+		// identity suffix, so only skill files can hit one. Checked after
+		// the ID suffix, which comes after any dot in the name.
+		if prefix, _, _ := strings.Cut(name, "."); windowsReservedNames[prefix] {
+			name = "_" + name
 		}
 		// Final guard against any residual collision (e.g. empty IDs).
 		for used[name] {

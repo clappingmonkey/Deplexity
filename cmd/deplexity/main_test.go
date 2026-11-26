@@ -37,12 +37,12 @@ func TestNeedsThreadFetch(t *testing.T) {
 		want    bool
 	}{
 		{name: "missing cached detail", err: errors.New("not found"), want: true},
-		{name: "unchanged without refresh", ref: models.ThreadRef{UpdatedAt: current, PreviousUpdatedAt: previous}, cached: cached, want: false},
-		{name: "unchanged with refresh", refresh: true, ref: models.ThreadRef{UpdatedAt: previous, PreviousUpdatedAt: previous}, cached: cached, want: false},
-		{name: "newer with refresh", refresh: true, ref: models.ThreadRef{UpdatedAt: current, PreviousUpdatedAt: previous}, cached: cached, want: true},
-		{name: "unknown current timestamp", refresh: true, ref: models.ThreadRef{PreviousUpdatedAt: previous}, cached: cached, want: true},
-		{name: "legacy index timestamp", refresh: true, ref: models.ThreadRef{UpdatedAt: current}, cached: cached, want: true},
-		{name: "nil cached thread", refresh: true, ref: models.ThreadRef{UpdatedAt: current, PreviousUpdatedAt: previous}, want: true},
+		{name: "unchanged without refresh", ref: models.ThreadRef{UpdatedAt: current, FetchedUpdatedAt: previous}, cached: cached, want: false},
+		{name: "unchanged with refresh", refresh: true, ref: models.ThreadRef{UpdatedAt: previous, FetchedUpdatedAt: previous}, cached: cached, want: false},
+		{name: "newer with refresh", refresh: true, ref: models.ThreadRef{UpdatedAt: current, FetchedUpdatedAt: previous}, cached: cached, want: true},
+		{name: "unknown current timestamp", refresh: true, ref: models.ThreadRef{FetchedUpdatedAt: previous}, cached: cached, want: true},
+		{name: "no fetched watermark", refresh: true, ref: models.ThreadRef{UpdatedAt: current}, cached: cached, want: true},
+		{name: "nil cached thread", refresh: true, ref: models.ThreadRef{UpdatedAt: current, FetchedUpdatedAt: previous}, want: true},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +137,9 @@ func TestRenderPDFIsolatedTimeoutIsExplicitAndPreservesExistingPDF(t *testing.T)
 	err := renderPDFIsolated(context.Background(), 50*time.Millisecond, thread, target)
 	if err == nil {
 		t.Fatal("expected PDF timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("timeout error %v does not wrap context.DeadlineExceeded", err)
 	}
 	for _, want := range []string{"PDF TIMEOUT", `thread "Slow report" (thread-123)`, "50ms per-thread limit", "renderer was terminated", "no new PDF was published", "existing PDF was left unchanged", "remaining PDF work was canceled"} {
 		if !strings.Contains(err.Error(), want) {
@@ -645,41 +648,36 @@ func TestExportHelpExplainsIncrementalPDF(t *testing.T) {
 }
 
 func TestResumePoint(t *testing.T) {
-	partial := &models.Thread{NextCursor: "c1"}
+	listed := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	newer := listed.Add(time.Hour)
+	partial := &models.Thread{NextCursor: "c1", ListedUpdatedAt: listed}
+	ref := models.ThreadRef{UpdatedAt: listed}
 
 	tests := []struct {
 		name    string
 		refresh bool
 		partial *models.Thread
+		ref     models.ThreadRef
 		want    bool
 	}{
-		{name: "interrupted fetch", partial: partial, want: true},
-		{name: "refresh discards checkpoint", refresh: true, partial: partial},
-		{name: "no partial on disk"},
-		{name: "already complete", partial: &models.Thread{Complete: true, NextCursor: "c1"}},
-		{name: "no progress recorded", partial: &models.Thread{}},
+		{name: "interrupted fetch", partial: partial, ref: ref, want: true},
+		{name: "same instant in another zone", partial: partial, ref: models.ThreadRef{UpdatedAt: listed.In(time.FixedZone("x", 3600))}, want: true},
+		{name: "refresh discards checkpoint", refresh: true, partial: partial, ref: ref},
+		{name: "no partial on disk", ref: ref},
+		{name: "already complete", partial: &models.Thread{Complete: true, NextCursor: "c1", ListedUpdatedAt: listed}, ref: ref},
+		{name: "no progress recorded", partial: &models.Thread{ListedUpdatedAt: listed}, ref: ref},
+		{name: "thread changed since checkpoint", partial: partial, ref: models.ThreadRef{UpdatedAt: newer}},
+		{name: "checkpoint without listing time", partial: &models.Thread{NextCursor: "c1"}, ref: ref},
+		{name: "listing without timestamp", partial: partial},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resumePoint(tt.refresh, tt.partial)
+			got := resumePoint(tt.refresh, tt.partial, tt.ref)
 			if (got != nil) != tt.want {
 				t.Errorf("resumePoint() = %v, want non-nil %t", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestAttachPreviousUpdatedAt(t *testing.T) {
-	previous := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	refs := []models.ThreadRef{{UUID: "unchanged"}, {UUID: "new"}}
-	attachPreviousUpdatedAt(refs, []models.ThreadRef{{UUID: "unchanged", UpdatedAt: previous}})
-
-	if !refs[0].PreviousUpdatedAt.Equal(previous) {
-		t.Errorf("PreviousUpdatedAt = %v, want %v", refs[0].PreviousUpdatedAt, previous)
-	}
-	if !refs[1].PreviousUpdatedAt.IsZero() {
-		t.Errorf("PreviousUpdatedAt = %v, want zero time", refs[1].PreviousUpdatedAt)
 	}
 }
 
@@ -1019,7 +1017,7 @@ func TestFetchThreadDetailsPreservesSlugThroughCheckpointAndManifest(t *testing.
 	if loaded.Slug != ref.Slug {
 		t.Errorf("cached slug = %q, want %q", loaded.Slug, ref.Slug)
 	}
-	manifest := buildManifest([]string{"json"}, threads, []models.ThreadRef{ref}, nil, nil, nil)
+	manifest := buildManifest([]string{"json"}, threads, []models.ThreadRef{ref}, nil, nil, nil, nil)
 	if manifest.ThreadIndex[ref.UUID] != ref.Slug {
 		t.Errorf("manifest index = %#v, want original list slug", manifest.ThreadIndex)
 	}
@@ -1155,8 +1153,8 @@ func TestFetchThreadDetailsTracksCheckpointFailure(t *testing.T) {
 	if len(threads) != 0 {
 		t.Fatalf("got %d successful threads, want none", len(threads))
 	}
-	if len(failures) != 1 || failures[0].UUID != "thread-1" || failures[0].Stage != models.ThreadExportStageFetch {
-		t.Fatalf("failures = %#v, want checkpoint failure recorded for thread-1", failures)
+	if len(failures) != 1 || failures[0].UUID != "thread-1" || failures[0].Stage != models.ThreadExportStageWrite {
+		t.Fatalf("failures = %#v, want a write failure recorded for thread-1", failures)
 	}
 }
 
@@ -1168,10 +1166,10 @@ func TestFetchThreadDetailsFailedRefreshDoesNotUseStaleCache(t *testing.T) {
 		t.Fatalf("seed stale thread: %v", err)
 	}
 	refs := []models.ThreadRef{{
-		UUID:              "thread-1",
-		Title:             "First",
-		UpdatedAt:         oldUpdatedAt.Add(time.Hour),
-		PreviousUpdatedAt: oldUpdatedAt,
+		UUID:             "thread-1",
+		Title:            "First",
+		UpdatedAt:        oldUpdatedAt.Add(time.Hour),
+		FetchedUpdatedAt: oldUpdatedAt,
 	}}
 	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
 		return nil, errors.New("refresh failed")
@@ -1222,10 +1220,10 @@ func TestFetchThreadDetailsReportsStaleSourcesCleanupFailure(t *testing.T) {
 		t.Fatalf("write blocking file: %v", err)
 	}
 	refs := []models.ThreadRef{{
-		UUID:              stale.UUID,
-		Slug:              stale.Slug,
-		UpdatedAt:         oldUpdatedAt.Add(time.Hour),
-		PreviousUpdatedAt: oldUpdatedAt,
+		UUID:             stale.UUID,
+		Slug:             stale.Slug,
+		UpdatedAt:        oldUpdatedAt.Add(time.Hour),
+		FetchedUpdatedAt: oldUpdatedAt,
 	}}
 	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
 		return &models.Thread{UUID: stale.UUID, Slug: stale.Slug, UpdatedAt: refs[0].UpdatedAt, Complete: true}, nil
@@ -1364,7 +1362,7 @@ func TestBuildManifestReportsThreadCompleteness(t *testing.T) {
 	account := &models.Account{GlobalSkills: []models.Skill{{ID: "skill-1"}}}
 
 	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "first"}, {UUID: "thread-2", Slug: "second"}, {UUID: "thread-3", Slug: "failed-slug"}}
-	manifest := buildManifest([]string{"json"}, threads, refs, []models.Space{{UUID: "space-1"}}, account, failures)
+	manifest := buildManifest([]string{"json"}, threads, refs, []models.Space{{UUID: "space-1"}}, account, failures, nil)
 	if manifest.ThreadsComplete {
 		t.Fatal("ThreadsComplete = true, want false")
 	}
@@ -1384,7 +1382,7 @@ func TestBuildManifestReportsThreadCompleteness(t *testing.T) {
 		t.Errorf("ThreadIndex = %#v, want failed thread list slug preserved", manifest.ThreadIndex)
 	}
 
-	complete := buildManifest([]string{"json"}, nil, nil, nil, nil, nil)
+	complete := buildManifest([]string{"json"}, nil, nil, nil, nil, nil, nil)
 	if !complete.ThreadsComplete || complete.ExpectedThreads != 0 {
 		t.Errorf("no-thread manifest = %#v, want complete with zero expected threads", complete)
 	}
@@ -1402,7 +1400,7 @@ func TestFinalizeExportWritesPartialManifestBeforeReturningError(t *testing.T) {
 		}},
 	}
 
-	err := finalizeExport(jsonExp, manifest)
+	err := finalizeExport(context.Background(), jsonExp, manifest)
 	if !errors.Is(err, errIncompleteThreadExport) {
 		t.Fatalf("error = %v, want errIncompleteThreadExport", err)
 	}
@@ -1412,5 +1410,362 @@ func TestFinalizeExportWritesPartialManifestBeforeReturningError(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"threads_complete": false`) || !strings.Contains(string(raw), `"uuid": "thread-2"`) {
 		t.Fatalf("manifest = %s, want partial status and failed thread", raw)
+	}
+}
+
+func TestAttachPreviousUpdatedAt(t *testing.T) {
+	listed := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	fetched := listed.Add(-time.Hour)
+	refs := []models.ThreadRef{{UUID: "watermarked", Slug: "new-slug"}, {UUID: "legacy"}, {UUID: "new"}}
+	attachPreviousUpdatedAt(refs, []models.ThreadRef{
+		{UUID: "watermarked", Slug: "old-slug", UpdatedAt: listed, FetchedUpdatedAt: fetched, CacheSlug: "cached-slug", RetryRequired: true},
+		{UUID: "legacy", Slug: "legacy-slug", UpdatedAt: listed},
+	})
+
+	if got := refs[0]; !got.FetchedUpdatedAt.Equal(fetched) || !got.RetryRequired || got.CacheSlug != "cached-slug" || got.PreviousSlug != "old-slug" {
+		t.Errorf("watermarked ref = %+v, want the saved watermark, retry flag and slugs", got)
+	}
+	// LoadThreadIndex migrates old indexes; here a missing watermark must stay
+	// missing instead of taking the listing time.
+	if got := refs[1]; !got.FetchedUpdatedAt.IsZero() || got.CacheSlug != "" || got.PreviousSlug != "legacy-slug" {
+		t.Errorf("unknown-watermark ref = %+v, want no watermark", got)
+	}
+	if got := refs[2]; !got.FetchedUpdatedAt.IsZero() || got.CacheSlug != "" || got.RetryRequired {
+		t.Errorf("new ref = %+v, want no carried state", got)
+	}
+}
+
+// An interrupted --refresh used to save the new listing time as if the detail
+// had been fetched, so the next --refresh skipped the stale cached thread.
+func TestInterruptedRefreshStillRefetchesChangedThread(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	t1 := t0.Add(time.Hour)
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "a", Slug: "a", UpdatedAt: t0, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonExp.SaveThreadIndex(&models.ThreadIndex{
+		Threads:  []models.ThreadRef{{UUID: "a", Slug: "a", UpdatedAt: t0, FetchedUpdatedAt: t0}},
+		Total:    1,
+		Complete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed := []models.Thread{{UUID: "a", Slug: "a", UpdatedAt: t1}}
+	cmd := &ExportCmd{Refresh: true}
+
+	// Run 1: the listing sees the change, then fails on a later page.
+	_, err := cmd.freshListThreads(context.Background(), jsonExp, func(context.Context, func(int)) ([]models.Thread, error) {
+		return listed, errors.New("page 2 failed")
+	})
+	if err == nil {
+		t.Fatal("freshListThreads: want the listing error")
+	}
+
+	// Run 2: the listing succeeds with the same timestamp.
+	refs, err := cmd.freshListThreads(context.Background(), jsonExp, func(context.Context, func(int)) ([]models.Thread, error) {
+		return listed, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fetched []string
+	getThread := func(_ context.Context, uuid string, _ *models.Thread, _ func(*models.Thread) error) (*models.Thread, error) {
+		fetched = append(fetched, uuid)
+		return &models.Thread{UUID: uuid, UpdatedAt: t1, Complete: true}, nil
+	}
+	if _, _, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, getThread); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fetched, []string{"a"}) {
+		t.Fatalf("fetched = %v, want the changed thread fetched again", fetched)
+	}
+	if refs[0].RetryRequired || !refs[0].FetchedUpdatedAt.Equal(t1) {
+		t.Errorf("ref after fetch = %+v, want retry cleared and watermark t1", refs[0])
+	}
+}
+
+func TestRefreshWithoutChangesFetchesNothing(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "a", Slug: "a", UpdatedAt: t0, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonExp.SaveThreadIndex(&models.ThreadIndex{
+		Threads:  []models.ThreadRef{{UUID: "a", Slug: "a", UpdatedAt: t0, FetchedUpdatedAt: t0}},
+		Total:    1,
+		Complete: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &ExportCmd{Refresh: true}
+	refs, err := cmd.freshListThreads(context.Background(), jsonExp, func(context.Context, func(int)) ([]models.Thread, error) {
+		return []models.Thread{{UUID: "a", Slug: "a", UpdatedAt: t0}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	getThread := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		t.Fatal("unchanged thread was fetched again")
+		return nil, nil
+	}
+	threads, _, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, getThread)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("threads = %d, err = %v; want the cached thread", len(threads), err)
+	}
+}
+
+func TestFetchThreadDetailsCanceledWithEverythingCached(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "a", Slug: "a", Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	getThread := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		t.Fatal("canceled run fetched a thread")
+		return nil, nil
+	}
+	cmd := &ExportCmd{}
+	_, _, err := cmd.fetchThreadDetails(ctx, jsonExp, []models.ThreadRef{{UUID: "a", Slug: "a"}}, getThread)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestApplyThreadRefMetadataSpaceMembership(t *testing.T) {
+	thread := &models.Thread{SpaceUUID: "space-a"}
+	if applyThreadRefMetadata(thread, models.ThreadRef{}) || thread.SpaceUUID != "space-a" {
+		t.Fatalf("legacy ref changed the space to %q", thread.SpaceUUID)
+	}
+	if !applyThreadRefMetadata(thread, models.ThreadRef{SpaceKnown: true}) || thread.SpaceUUID != "" {
+		t.Fatalf("current listing without a space left %q", thread.SpaceUUID)
+	}
+}
+
+func TestFinalizeExport(t *testing.T) {
+	t.Run("canceled writes no manifest", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "out")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := finalizeExport(ctx, &export.JSONExporter{OutputDir: dir}, buildManifest(nil, nil, nil, nil, nil, nil, nil))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "manifest.json")); !os.IsNotExist(err) {
+			t.Fatalf("manifest written for a canceled run: %v", err)
+		}
+	})
+	t.Run("creates the output dir", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "fresh", "out")
+		if err := finalizeExport(context.Background(), &export.JSONExporter{OutputDir: dir}, buildManifest(nil, nil, nil, nil, nil, nil, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("section failures exit non-zero", func(t *testing.T) {
+		dir := t.TempDir()
+		sections := []models.SectionFailure{{Section: models.SectionSpaceDetail, Item: "space", Error: "boom"}}
+		err := finalizeExport(context.Background(), &export.JSONExporter{OutputDir: dir}, buildManifest(nil, nil, nil, nil, nil, nil, sections))
+		if !errors.Is(err, errIncompleteSections) || errors.Is(err, errIncompleteThreadExport) {
+			t.Fatalf("err = %v, want only errIncompleteSections", err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m models.ExportManifest
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m.SectionsComplete || len(m.FailedSections) != 1 {
+			t.Fatalf("manifest sections = %v %+v", m.SectionsComplete, m.FailedSections)
+		}
+	})
+}
+
+// A thread whose fetch watermark is unknown must be fetched on the next
+// --refresh, even after a plain run re-listed it without fetching.
+func TestUnknownWatermarkSurvivesPlainRelist(t *testing.T) {
+	jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+	t1 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "a", Slug: "a", Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonExp.SaveThreadIndex(&models.ThreadIndex{Threads: []models.ThreadRef{{UUID: "a", Slug: "a"}}, Total: 1}); err != nil {
+		t.Fatal(err)
+	}
+	list := func(context.Context, func(int)) ([]models.Thread, error) {
+		return []models.Thread{{UUID: "a", Slug: "a", UpdatedAt: t1}}, nil
+	}
+	if _, err := (&ExportCmd{}).freshListThreads(context.Background(), jsonExp, list); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := (&ExportCmd{Refresh: true}).freshListThreads(context.Background(), jsonExp, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached, err := jsonExp.LoadCompleteThread(refs[0])
+	if !needsThreadFetch(true, refs[0], cached, err) {
+		t.Fatalf("ref = %+v, want a fetch because the cached detail's version is unknown", refs[0])
+	}
+}
+
+// A listing without a slug must not make the run forget where the detail is.
+func TestFetchThreadDetailsKeepsCacheSlugWhenListingHasNone(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "thread-1", Slug: "old-slug", Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	refs := []models.ThreadRef{{UUID: "thread-1", CacheSlug: "old-slug"}}
+	fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+		t.Fatal("fetch called for a cached thread")
+		return nil, nil
+	}
+	cmd := &ExportCmd{}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch)
+	if err != nil || len(failures) != 0 || len(threads) != 1 {
+		t.Fatalf("threads=%d failures=%v err=%v", len(threads), failures, err)
+	}
+	if refs[0].CacheSlug != "old-slug" {
+		t.Fatalf("cache slug = %q, want old-slug kept", refs[0].CacheSlug)
+	}
+	if _, err := jsonExp.LoadThread(refs[0]); err != nil {
+		t.Fatalf("cached thread no longer found: %v", err)
+	}
+}
+
+// A checkpoint written under a new slug must win over the older copy under the
+// previous cache slug, even when the fetch then fails.
+func TestFetchThreadDetailsCheckpointMovesCacheSlug(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	if err := jsonExp.ExportThread(&models.Thread{UUID: "thread-1", Slug: "a", Title: "STALE"}); err != nil {
+		t.Fatal(err)
+	}
+	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "b", CacheSlug: "a"}}
+	fetch := func(_ context.Context, _ string, _ *models.Thread, onPage func(*models.Thread) error) (*models.Thread, error) {
+		if err := onPage(&models.Thread{UUID: "thread-1", Slug: "b", Title: "NEW"}); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("page 2 failed")
+	}
+	cmd := &ExportCmd{}
+	if _, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch); err != nil || len(failures) != 1 {
+		t.Fatalf("failures=%v err=%v, want one fetch failure", failures, err)
+	}
+	if refs[0].CacheSlug != "b" {
+		t.Fatalf("cache slug = %q, want b", refs[0].CacheSlug)
+	}
+	// Even an index that still says "a" (the run stopped before saving it)
+	// must not find the older copy.
+	got, err := jsonExp.LoadThread(models.ThreadRef{UUID: "thread-1", Slug: "b", CacheSlug: "a"})
+	if err != nil || got.Title != "NEW" {
+		t.Fatalf("LoadThread = %+v, %v; want the NEW checkpoint", got, err)
+	}
+}
+
+// Slugs that name the same directory must not delete the cache just written.
+func TestFetchThreadDetailsKeepsCacheWhenSlugsShareDirectory(t *testing.T) {
+	for _, tc := range []struct{ old, current string }{
+		{"My-Slug", "my-slug"},
+		{"a--b", "a-b"},
+	} {
+		t.Run(tc.current, func(t *testing.T) {
+			jsonExp := &export.JSONExporter{OutputDir: t.TempDir()}
+			refs := []models.ThreadRef{{UUID: "thread-1", Slug: tc.current, CacheSlug: tc.old}}
+			fetch := func(context.Context, string, *models.Thread, func(*models.Thread) error) (*models.Thread, error) {
+				return &models.Thread{UUID: "thread-1", Slug: tc.current, Complete: true}, nil
+			}
+			cmd := &ExportCmd{}
+			threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch)
+			if err != nil || len(failures) != 0 || len(threads) != 1 {
+				t.Fatalf("threads=%d failures=%v err=%v, want the fresh thread", len(threads), failures, err)
+			}
+		})
+	}
+}
+
+// When the old copy cannot be removed, the index must still point at the new
+// checkpoint, so a retry does not resume the older one.
+func TestFetchThreadDetailsDropFailureKeepsNewCacheSlug(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	stale := &models.Thread{UUID: "thread-1", Slug: "a", Title: "STALE", NextCursor: "c1"}
+	if err := jsonExp.ExportThread(stale); err != nil {
+		t.Fatal(err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "threads", "a-*"))
+	if len(matches) != 1 {
+		t.Fatalf("stale dirs = %v", matches)
+	}
+	staleDir := matches[0]
+	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "b", CacheSlug: "a"}}
+	fetch := func(_ context.Context, _ string, _ *models.Thread, onPage func(*models.Thread) error) (*models.Thread, error) {
+		if err := os.Chmod(staleDir, 0o500); err != nil {
+			return nil, err
+		}
+		defer os.Chmod(staleDir, 0o700)
+		return nil, onPage(&models.Thread{UUID: "thread-1", Slug: "b", Title: "CURRENT", NextCursor: "c2"})
+	}
+	cmd := &ExportCmd{}
+	_, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch)
+	if err != nil || len(failures) != 1 {
+		t.Fatalf("failures=%v err=%v, want one failure", failures, err)
+	}
+	if refs[0].CacheSlug != "b" {
+		t.Fatalf("cache slug = %q, want b", refs[0].CacheSlug)
+	}
+	got, err := jsonExp.LoadThread(refs[0])
+	if err != nil || got.Title != "CURRENT" {
+		t.Fatalf("LoadThread = %+v, %v; want the CURRENT checkpoint", got, err)
+	}
+}
+
+// A checkpoint left by a fetch of an older version of the thread must not be
+// resumed, or the export would mix old entries with a current watermark.
+func TestFetchThreadDetailsDoesNotResumeCheckpointFromOlderListing(t *testing.T) {
+	dir := t.TempDir()
+	jsonExp := &export.JSONExporter{OutputDir: dir}
+	noon := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	one := noon.Add(time.Hour)
+	old := &models.Thread{
+		UUID: "thread-1", Slug: "a", UpdatedAt: noon, NextCursor: "old-cursor", ListedUpdatedAt: noon,
+		Entries: []models.Entry{{UUID: "e1", Query: "STALE"}},
+	}
+	if err := jsonExp.ExportThread(old); err != nil {
+		t.Fatal(err)
+	}
+	refs := []models.ThreadRef{{UUID: "thread-1", Slug: "a", UpdatedAt: one, CacheSlug: "a", FetchedUpdatedAt: noon.Add(-time.Hour), RetryRequired: true}}
+
+	var gotResume *models.Thread
+	fetch := func(_ context.Context, _ string, resume *models.Thread, _ func(*models.Thread) error) (*models.Thread, error) {
+		gotResume = resume
+		return &models.Thread{UUID: "thread-1", Slug: "a", UpdatedAt: one, Complete: true,
+			Entries: []models.Entry{{UUID: "e1", Query: "CURRENT"}}}, nil
+	}
+	cmd := &ExportCmd{}
+	threads, failures, err := cmd.fetchThreadDetails(context.Background(), jsonExp, refs, fetch)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("failures=%v err=%v", failures, err)
+	}
+	if gotResume != nil {
+		t.Fatalf("resumed from %q, want a fresh fetch", gotResume.NextCursor)
+	}
+	if len(threads) != 1 || threads[0].Entries[0].Query != "CURRENT" {
+		t.Fatalf("threads = %+v, want CURRENT", threads)
+	}
+	if !refs[0].FetchedUpdatedAt.Equal(one) {
+		t.Fatalf("watermark = %v, want %v", refs[0].FetchedUpdatedAt, one)
+	}
+	saved, err := jsonExp.LoadThread(refs[0])
+	if err != nil || !saved.ListedUpdatedAt.Equal(one) {
+		t.Fatalf("saved = %+v, %v; want listed_updated_at %v", saved, err, one)
 	}
 }
