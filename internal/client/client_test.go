@@ -758,6 +758,22 @@ func TestGetRawURLErrorsDoNotLeakSignedQueryOrBody(t *testing.T) {
 	}
 }
 
+func TestCookieHeaderSendsSavedCookies(t *testing.T) {
+	c, err := New(&models.SavedSession{Cookies: []models.Cookie{
+		{Name: "__Secure-next-auth.session-token", Value: "chosen"},
+		{Name: "next-auth.csrf-token", Value: "csrf"},
+	}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://www.perplexity.ai/", nil)
+	c.setHeaders(req)
+	want := "__Secure-next-auth.session-token=chosen; next-auth.csrf-token=csrf"
+	if got := req.Header.Get("Cookie"); got != want {
+		t.Errorf("Cookie = %q, want %q", got, want)
+	}
+}
+
 func TestNewClientConfiguresRedirectPolicy(t *testing.T) {
 	c, err := New(&models.SavedSession{})
 	if err != nil {
