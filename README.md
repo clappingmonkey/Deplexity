@@ -70,8 +70,12 @@ deplexity login
 # Use a specific Chromium-based browser (or set DEPLEXITY_BROWSER)
 deplexity login --browser "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 
-# Headless/server: provide session cookie directly
-deplexity login --cookie "YOUR_SESSION_TOKEN"
+# Headless/server: provide the session cookie directly.
+# Prefer stdin, so the token stays out of shell history and the process list:
+deplexity login --cookie -                    # paste the token (hidden), or pipe it in
+# DEPLEXITY_COOKIE is also read (e.g. from a CI secret). Typed inline it still
+# lands in shell history, and same-user processes can read the environment.
+DEPLEXITY_COOKIE="$SECRET_FROM_CI" deplexity login
 
 # Check session status
 deplexity status
@@ -80,7 +84,7 @@ deplexity status
 deplexity logout
 ```
 
-The session token is stored at `~/.config/deplexity/session.json` (mode 0600).
+The session token is stored at `~/.config/deplexity/session.json` (mode 0600, directory 0700). It is written atomically, and Deplexity warns if the file or directory becomes readable by other users.
 
 ### Export
 

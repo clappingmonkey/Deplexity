@@ -63,6 +63,8 @@ go_test(
     ],
     embed = [":auth"],
     deps = [
+        "//internal/api",
+        "//internal/client",
         "//internal/models",
         "@com_github_chromedp_cdproto//network",
         "@com_github_chromedp_cdproto//target",

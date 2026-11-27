@@ -60,25 +60,34 @@ type CLI struct {
 	Verbose bool       `short:"v" help:"Enable verbose/debug output."`
 	Login   LoginCmd   `cmd:"" help:"Authenticate with Perplexity (opens browser or accepts --cookie)."`
 	Export  ExportCmd  `cmd:"" help:"Export threads, spaces, and profile data."`
-	Status  StatusCmd  `cmd:"" help:"Show current session status and rate limits."`
+	Status  StatusCmd  `cmd:"" help:"Show current session status."`
 	Logout  LogoutCmd  `cmd:"" help:"Remove saved session data."`
 	Version VersionCmd `cmd:"" help:"Print version information."`
 }
 
 // LoginCmd handles authentication.
 type LoginCmd struct {
-	Cookie  string `help:"Provide session token directly (bypasses browser login)." placeholder:"TOKEN"`
+	Cookie  string `help:"Session token to use instead of browser login. Use '-' to read it from stdin, which keeps it out of the process list and shell history. DEPLEXITY_COOKIE is also read." placeholder:"TOKEN" env:"DEPLEXITY_COOKIE"`
 	Browser string `help:"Chrome, Chromium, Edge or Brave executable for browser login (default: auto-detect)." placeholder:"PATH" env:"DEPLEXITY_BROWSER"`
+
+	stdin io.Reader // os.Stdin unless set by tests
 }
 
 func (cmd *LoginCmd) Run(ctx context.Context) error {
 	var session *models.SavedSession
 	var err error
 
-	if cmd.Cookie != "" {
+	switch {
+	case cmd.Cookie == "-":
+		var token string
+		if token, err = cmd.readStdinToken(ctx); err != nil {
+			return err
+		}
+		session, err = auth.CookieLogin(ctx, token)
+	case cmd.Cookie != "":
 		session, err = auth.CookieLogin(ctx, cmd.Cookie)
-	} else {
-		session, err = auth.BrowserLogin(ctx, cmd.Browser)
+	default:
+		session, err = cmd.browserLogin(ctx)
 	}
 	if err != nil {
 		return err
@@ -91,6 +100,35 @@ func (cmd *LoginCmd) Run(ctx context.Context) error {
 	path, _ := auth.SessionPath()
 	fmt.Printf("Session saved to: %s\n", path)
 	return nil
+}
+
+// Replaced by tests.
+var (
+	browserLoginFunc   = auth.BrowserLogin
+	confirmSessionFunc = auth.ConfirmSession
+)
+
+// browserLogin captures a session in the browser and confirms Perplexity
+// accepts it. A session the server rejects is not saved; if the check itself
+// cannot run (e.g. no network), the captured session is kept with a warning.
+func (cmd *LoginCmd) browserLogin(ctx context.Context) (*models.SavedSession, error) {
+	session, err := browserLoginFunc(ctx, cmd.Browser)
+	if err != nil {
+		return nil, err
+	}
+	info, err := confirmSessionFunc(ctx, session)
+	switch {
+	case errors.Is(err, auth.ErrSessionRejected):
+		return nil, err
+	case err != nil:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %v; saving the session without confirming it.\n", err)
+	case info.Email != "":
+		fmt.Printf("Logged in as: %s\n", info.Email)
+	}
+	return session, nil
 }
 
 // ExportCmd handles data export.
@@ -1114,7 +1152,7 @@ func (cmd *StatusCmd) Run(ctx context.Context) error {
 	fmt.Printf("Session: VALID\n")
 	fmt.Printf("Email:   %s\n", info.Email)
 	if !info.ExpiresAt.IsZero() {
-		fmt.Printf("Expires: %s\n", info.ExpiresAt.Format("2006-01-02 15:04 UTC"))
+		fmt.Printf("Expires: %s\n", info.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC"))
 	}
 
 	return nil
@@ -1263,7 +1301,9 @@ func writeBounded(w io.Writer, msg string, wait time.Duration) {
 }
 
 func forceQuit(sig os.Signal) {
-	// os.Exit skips deferred cleanup, so stop a login browser first.
+	// os.Exit skips deferred cleanup, so turn terminal echo back on and stop a
+	// login browser first.
+	shutdownTerminal()
 	if err := auth.KillLoginHelpers(); err != nil {
 		writeBounded(os.Stderr, fmt.Sprintf("warning: %v\n", err), forceWarningTimeout)
 	}
