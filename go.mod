@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/chromedp/cdproto v0.160.11
 	github.com/chromedp/chromedp v0.24.0
-	github.com/gpdf-dev/gpdf v1.0.19
+	github.com/gpdf-dev/gpdf v1.0.20
 	github.com/refraction-networking/utls v1.8.2
 	github.com/schollz/progressbar/v3 v3.19.1
 	golang.org/x/sys v0.50.0
