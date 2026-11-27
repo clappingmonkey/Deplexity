@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.2](https://github.com/clappingmonkey/Deplexity/compare/v0.5.1...v0.5.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **auth:** replace rod login with supervised chromedp helper and fix signal handling ([#136](https://github.com/clappingmonkey/Deplexity/issues/136)) ([a7672cf](https://github.com/clappingmonkey/Deplexity/commit/a7672cf42809ded5a84b2142e0e3e562157b9233))
+* **auth:** store sessions privately and check them like export does ([#141](https://github.com/clappingmonkey/Deplexity/issues/141)) ([b27e762](https://github.com/clappingmonkey/Deplexity/commit/b27e7622d1e3a32fbedecb4db498c7c2f1711929))
+* **client:** reuse connections, harden redirects and retries ([#131](https://github.com/clappingmonkey/Deplexity/issues/131)) ([53023e8](https://github.com/clappingmonkey/Deplexity/commit/53023e8ce12ad558424547d3025ff9f6da82423e))
+* **deps:** update module github.com/chromedp/cdproto to v0.160.11 ([#138](https://github.com/clappingmonkey/Deplexity/issues/138)) ([c80ffa1](https://github.com/clappingmonkey/Deplexity/commit/c80ffa17d0726e5467ce9bdeec88eae0e2936b5a))
+* **deps:** update module github.com/chromedp/cdproto to v0.160.12 ([#143](https://github.com/clappingmonkey/Deplexity/issues/143)) ([5e5b2e3](https://github.com/clappingmonkey/Deplexity/commit/5e5b2e34a3ddb01bd424c5a99eed45d3ea4df356))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.18 ([#129](https://github.com/clappingmonkey/Deplexity/issues/129)) ([8f7177f](https://github.com/clappingmonkey/Deplexity/commit/8f7177f700764478a45b678669eab413f94ab729))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.19 ([#135](https://github.com/clappingmonkey/Deplexity/issues/135)) ([624f5f0](https://github.com/clappingmonkey/Deplexity/commit/624f5f09599d35cb500e08d2ca6e88280d7e433f))
+* **deps:** update module github.com/gpdf-dev/gpdf to v1.0.20 ([#139](https://github.com/clappingmonkey/Deplexity/issues/139)) ([3a0f344](https://github.com/clappingmonkey/Deplexity/commit/3a0f344b5613b17b1010fb1e7095eb76074c8342))
+* **deps:** update module golang.org/x/net to v0.63.0 ([#125](https://github.com/clappingmonkey/Deplexity/issues/125)) ([f2bd88b](https://github.com/clappingmonkey/Deplexity/commit/f2bd88b2878ea679beb7996454be18501864f98f))
+* **export:** make refresh, resume and partial failures report correctly ([#137](https://github.com/clappingmonkey/Deplexity/issues/137)) ([c1ba07c](https://github.com/clappingmonkey/Deplexity/commit/c1ba07cd8eb5dae15437ad52d229aab716cb2c0d))
+
 ## [0.5.1](https://github.com/clappingmonkey/Deplexity/compare/v0.5.0...v0.5.1) (2026-11-16)
 
 
