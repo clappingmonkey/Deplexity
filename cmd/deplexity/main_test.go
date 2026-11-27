@@ -19,6 +19,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/clappingmonkey/deplexity/internal/auth"
 	"github.com/clappingmonkey/deplexity/internal/export"
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
@@ -627,6 +628,88 @@ func TestForcePDFFlag(t *testing.T) {
 		if cli.Export.ForcePDF != tt.want {
 			t.Fatalf("%v: ForcePDF = %t, want %t", tt.args, cli.Export.ForcePDF, tt.want)
 		}
+	}
+}
+
+func TestLoginCookieFromEnvironment(t *testing.T) {
+	for _, tt := range []struct {
+		env  string
+		args []string
+		want string
+	}{
+		{args: []string{"login"}, want: ""},
+		{env: "env-token", args: []string{"login"}, want: "env-token"},
+		{env: "env-token", args: []string{"login", "--cookie", "-"}, want: "-"},
+	} {
+		t.Setenv("DEPLEXITY_COOKIE", tt.env)
+		var cli CLI
+		parser, err := kong.New(&cli)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parser.Parse(tt.args); err != nil {
+			t.Fatal(err)
+		}
+		if cli.Login.Cookie != tt.want {
+			t.Fatalf("env %q %v: Cookie = %q, want %q", tt.env, tt.args, cli.Login.Cookie, tt.want)
+		}
+	}
+}
+
+func TestBrowserLoginConfirmsSession(t *testing.T) {
+	captured := &models.SavedSession{SessionToken: "tok"}
+	stub := func(t *testing.T, confirm func(context.Context, *models.SavedSession) (*auth.SessionInfo, error)) {
+		oldLogin, oldConfirm := browserLoginFunc, confirmSessionFunc
+		t.Cleanup(func() { browserLoginFunc, confirmSessionFunc = oldLogin, oldConfirm })
+		browserLoginFunc = func(context.Context, string) (*models.SavedSession, error) { return captured, nil }
+		confirmSessionFunc = confirm
+	}
+
+	t.Run("confirmed", func(t *testing.T) {
+		stub(t, func(context.Context, *models.SavedSession) (*auth.SessionInfo, error) {
+			return &auth.SessionInfo{Email: "a@b"}, nil
+		})
+		if got, err := (&LoginCmd{}).browserLogin(context.Background()); err != nil || got != captured {
+			t.Fatalf("browserLogin = %v, %v", got, err)
+		}
+	})
+	t.Run("rejected is not saved", func(t *testing.T) {
+		stub(t, func(context.Context, *models.SavedSession) (*auth.SessionInfo, error) {
+			return nil, auth.ErrSessionRejected
+		})
+		if got, err := (&LoginCmd{}).browserLogin(context.Background()); !errors.Is(err, auth.ErrSessionRejected) || got != nil {
+			t.Fatalf("browserLogin = %v, %v", got, err)
+		}
+	})
+	t.Run("check failure keeps session", func(t *testing.T) {
+		stub(t, func(context.Context, *models.SavedSession) (*auth.SessionInfo, error) {
+			return nil, errors.New("dial failed")
+		})
+		if got, err := (&LoginCmd{}).browserLogin(context.Background()); err != nil || got != captured {
+			t.Fatalf("browserLogin = %v, %v", got, err)
+		}
+	})
+	t.Run("check failure after cancel is not saved", func(t *testing.T) {
+		stub(t, func(context.Context, *models.SavedSession) (*auth.SessionInfo, error) {
+			return nil, errors.New("dial failed")
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if got, err := (&LoginCmd{}).browserLogin(ctx); !errors.Is(err, context.Canceled) || got != nil {
+			t.Fatalf("browserLogin = %v, %v", got, err)
+		}
+	})
+}
+
+func TestLoginReadsTokenFromStdin(t *testing.T) {
+	cmd := &LoginCmd{Cookie: "-", stdin: strings.NewReader("  tok-1  \nignored\n")}
+	got, err := cmd.readStdinToken(context.Background())
+	if err != nil || got != "tok-1" {
+		t.Fatalf("readStdinToken = %q, %v", got, err)
+	}
+	cmd.stdin = strings.NewReader("")
+	if _, err := cmd.readStdinToken(context.Background()); err == nil {
+		t.Fatal("empty stdin accepted")
 	}
 }
 

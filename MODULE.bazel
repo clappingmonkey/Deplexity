@@ -23,4 +23,5 @@ use_repo(
     "com_github_refraction_networking_utls",
     "com_github_schollz_progressbar_v3",
     "org_golang_x_sys",
+    "org_golang_x_term",
 )

@@ -1,13 +1,12 @@
 package auth
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/cookiejar"
-	"net/url"
+	"strings"
 	"time"
 
 	"github.com/clappingmonkey/deplexity/internal/api"
@@ -15,7 +14,9 @@ import (
 	"github.com/clappingmonkey/deplexity/internal/models"
 )
 
-const sessionValidateURL = "https://www.perplexity.ai/api/auth/session"
+// maxTokenLength bounds a session token read from --cookie, the environment
+// or stdin. Browsers cap a whole cookie at 4096 bytes.
+const maxTokenLength = 4096
 
 // SessionInfo holds the result of validating a session.
 type SessionInfo struct {
@@ -24,82 +25,77 @@ type SessionInfo struct {
 	ExpiresAt time.Time
 }
 
-// ValidateSession checks if the saved session is still valid by calling
-// Perplexity's NextAuth session endpoint.
+// checkSession asks Perplexity whether a session is signed in. It is a
+// variable so tests can stub the network call.
+var checkSession = func(ctx context.Context, session *models.SavedSession) (*api.SessionResponse, error) {
+	c, err := client.New(session)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return api.ValidateSession(ctx, c)
+}
+
+// ValidateSession checks whether a saved session is still signed in, using
+// the same client (TLS fingerprint, headers, retries) as the export. A
+// rejected session is reported as Valid=false; a request that could not be
+// completed is returned as an error.
 func ValidateSession(ctx context.Context, session *models.SavedSession) (*SessionInfo, error) {
 	if session == nil {
 		return &SessionInfo{Valid: false}, nil
 	}
-
-	jar, err := cookiejar.New(nil)
+	raw, err := checkSession(ctx, session)
 	if err != nil {
-		return nil, fmt.Errorf("could not create cookie jar: %w", err)
+		if errors.Is(err, client.ErrNotAuthenticated) {
+			return &SessionInfo{Valid: false}, nil
+		}
+		return nil, err
 	}
-
-	perplexityURL, _ := url.Parse("https://www.perplexity.ai")
-	var httpCookies []*http.Cookie
-	for _, c := range session.Cookies {
-		httpCookies = append(httpCookies, &http.Cookie{
-			Name:     c.Name,
-			Value:    c.Value,
-			Domain:   c.Domain,
-			Path:     c.Path,
-			Secure:   c.Secure,
-			HttpOnly: c.HTTPOnly,
-		})
-	}
-	jar.SetCookies(perplexityURL, httpCookies)
-
-	httpClient := &http.Client{
-		Jar:     jar,
-		Timeout: 15 * time.Second,
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", sessionValidateURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not create request: %w", err)
-	}
-	req.Header.Set("User-Agent", client.UserAgent)
-	req.Header.Set("Referer", "https://www.perplexity.ai/")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("session validation request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return &SessionInfo{Valid: false}, nil
-	}
-
-	return decodeSessionInfo(resp.Body), nil
+	return sessionInfo(raw), nil
 }
 
-func decodeSessionInfo(r io.Reader) *SessionInfo {
-	if r == nil {
+func sessionInfo(raw *api.SessionResponse) *SessionInfo {
+	if !api.SessionIsAuthenticated(raw) {
 		return &SessionInfo{Valid: false}
 	}
-
-	var result api.SessionResponse
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(&result); err != nil {
-		return &SessionInfo{Valid: false}
-	}
-	var extra interface{}
-	if err := decoder.Decode(&extra); err != io.EOF || !api.SessionIsAuthenticated(&result) {
-		return &SessionInfo{Valid: false}
-	}
-
-	info := &SessionInfo{Valid: true, Email: result.User.Email}
-	if expires, err := time.Parse(time.RFC3339, result.Expires); err == nil {
-		info.ExpiresAt = expires
+	info := &SessionInfo{Valid: true, Email: raw.User.Email}
+	if expires, err := time.Parse(time.RFC3339, raw.Expires); err == nil {
+		info.ExpiresAt = expires.UTC()
 	}
 	return info
+}
+
+// ErrSessionRejected reports a session Perplexity does not accept.
+var ErrSessionRejected = errors.New("Perplexity rejected the session — please log in again")
+
+// ConfirmSession validates a freshly captured session and records the expiry
+// the server reports for it, unless that is already past (e.g. clock skew).
+func ConfirmSession(ctx context.Context, session *models.SavedSession) (*SessionInfo, error) {
+	info, err := ValidateSession(ctx, session)
+	if err != nil {
+		return nil, fmt.Errorf("could not validate session: %w", err)
+	}
+	if !info.Valid {
+		return nil, ErrSessionRejected
+	}
+	if info.ExpiresAt.After(time.Now()) {
+		session.ExpiresAt = info.ExpiresAt
+		for i := range session.Cookies {
+			if session.Cookies[i].Name == sessionCookieName {
+				session.Cookies[i].Expires = float64(info.ExpiresAt.UnixMilli()) / 1000
+			}
+		}
+	}
+	return info, nil
 }
 
 // CookieLogin creates a session from a manually provided session token,
 // bypassing browser-based authentication entirely.
 func CookieLogin(ctx context.Context, token string) (*models.SavedSession, error) {
+	token, err := normalizeToken(token)
+	if err != nil {
+		return nil, err
+	}
 	session := &models.SavedSession{
 		SessionToken: token,
 		Cookies: []models.Cookie{
@@ -116,21 +112,58 @@ func CookieLogin(ctx context.Context, token string) (*models.SavedSession, error
 	}
 
 	fmt.Println("Validating session token...")
-	info, err := ValidateSession(ctx, session)
+	info, err := ConfirmSession(ctx, session)
+	if errors.Is(err, ErrSessionRejected) {
+		return nil, fmt.Errorf("invalid or expired token — please check the value and try again: %w", err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("could not validate token: %w", err)
+		return nil, err
 	}
-	if !info.Valid {
-		return nil, fmt.Errorf("invalid or expired token — please check the value and try again")
+	if info.Email != "" {
+		fmt.Printf("Token valid for: %s\n", info.Email)
 	}
-
-	// Prefer the expiry the server reports for this session, unless it is
-	// already past (e.g. clock skew), and record it on the cookie as well.
-	if info.ExpiresAt.After(time.Now()) {
-		session.ExpiresAt = info.ExpiresAt.UTC()
-		session.Cookies[0].Expires = float64(info.ExpiresAt.UnixMilli()) / 1000
-	}
-
-	fmt.Printf("Token valid for: %s\n", info.Email)
 	return session, nil
+}
+
+// ReadToken reads a session token from r: the first line, without
+// surrounding whitespace, at most maxTokenLength bytes.
+func ReadToken(r io.Reader) (string, error) {
+	// Read one byte past the longest allowed line ("token\r\n"), so a line cut
+	// off by the limit is reported as too long instead of read as a token.
+	const limit = maxTokenLength + 2
+	line, err := bufio.NewReaderSize(io.LimitReader(r, limit+1), limit+1).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("could not read session token: %w", err)
+	}
+	complete := strings.HasSuffix(line, "\n") || len(line) <= limit
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if !complete || len(line) > maxTokenLength {
+		return "", fmt.Errorf("session token is longer than %d bytes", maxTokenLength)
+	}
+	return normalizeToken(line)
+}
+
+// normalizeToken trims whitespace and rejects values that are not a valid
+// cookie value, so a pasted token cannot add other cookies or headers.
+func normalizeToken(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", errors.New("session token is empty")
+	}
+	if len(token) > maxTokenLength {
+		return "", fmt.Errorf("session token is longer than %d bytes", maxTokenLength)
+	}
+	for i := 0; i < len(token); i++ {
+		if !isCookieOctet(token[i]) {
+			return "", errors.New("session token contains characters that are not allowed in a cookie (copy only the value of " + sessionCookieName + ")")
+		}
+	}
+	return token, nil
+}
+
+// isCookieOctet reports whether b may appear in an unquoted cookie value
+// (RFC 6265 cookie-octet): printable ASCII except space, '"', ',', ';' and
+// '\'.
+func isCookieOctet(b byte) bool {
+	return b > 0x20 && b < 0x7f && b != '"' && b != ',' && b != ';' && b != '\\'
 }
