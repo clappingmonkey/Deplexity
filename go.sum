@@ -16,8 +16,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/go-json-experiment/json v1.27.2 h1:rZIyqYh+Qq+nEa+Y5iwohr8h7G/MfLJqu2CD4/ZONqM=
 github.com/go-json-experiment/json v1.27.2/go.mod h1:tphK2c80bpPhMOI4v6bIc2xWywPfbqi1Z06+RcrMkDg=
-github.com/gpdf-dev/gpdf v1.0.19 h1:e69M6nCiU9psg29vVDiusm/GDIHRWB+919ze7wMM6j8=
-github.com/gpdf-dev/gpdf v1.0.19/go.mod h1:QTnE2q2L+q9E1neWCZen/V/x9iLOuJ1jWHBtylimfAw=
+github.com/gpdf-dev/gpdf v1.0.20 h1:hvtlui9ukO8QMZ2+pFYE22oaHxpPQIw9je7rMukkGaM=
+github.com/gpdf-dev/gpdf v1.0.20/go.mod h1:QTnE2q2L+q9E1neWCZen/V/x9iLOuJ1jWHBtylimfAw=
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
 github.com/klauspost/compress v1.17.4 h1:Ej5ixsIri7BrIjBkRZLTo6ghwrEtHFk7ijlczPW4fZ4=
